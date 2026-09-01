@@ -13,6 +13,7 @@ from app.api.v1 import credentials as credentials_router
 from app.api.v1 import documents as documents_router
 from app.api.v1 import health as health_router
 from app.api.v1 import reports as reports_router
+from app.api.v1 import support as support_router
 from app.api.v1 import tasks as tasks_router
 from app.core.audit import audit_middleware
 from app.core.config import get_settings
@@ -49,6 +50,7 @@ def create_app() -> FastAPI:
     app.include_router(audit_router.router, prefix='/api/v1/audit', tags=['audit'])
     app.include_router(reports_router.router, prefix='/api/v1/reports', tags=['reports'])
     app.include_router(bd_router.router, prefix='/api/v1/bd', tags=['bd'])
+    app.include_router(support_router.router, prefix='/api/v1/support', tags=['support'])
 
     @app.get('/', tags=['root'])
     async def root():

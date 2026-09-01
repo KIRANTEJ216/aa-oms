@@ -282,3 +282,56 @@ export const AuditAPI = {
     return apiFetch(`/api/v1/audit/logs${qs ? "?" + qs : ""}`) as Promise<{ total: number; items: AuditEntry[] }>;
   },
 };
+
+// ── Support Types ─────────────────────────────────────────────────
+export type SupportTicket = {
+  id: string; tenant_id: string; title: string; description: string;
+  category: "Technical" | "Billing" | "General" | "Feature Request" | "Bug Report";
+  priority: "Low" | "Medium" | "High" | "Urgent";
+  status: "Open" | "In Progress" | "Waiting on Customer" | "Resolved" | "Closed";
+  client_id?: string; assigned_to?: string; resolution?: string;
+  created_at: string; updated_at?: string; created_by?: string;
+  source: "web" | "chatbot" | "email" | "api";
+};
+
+export type SupportTicketStats = {
+  total: number;
+  by_status: Record<string, number>;
+  by_category: Record<string, number>;
+  by_priority: Record<string, number>;
+  by_source: Record<string, number>;
+};
+
+export type ChatbotMessage = {
+  message: string;
+  session_id?: string;
+  context?: Record<string, unknown>;
+};
+
+export type ChatbotResponse = {
+  response: string;
+  session_id: string;
+  ticket_created: boolean;
+  ticket_id?: string;
+  suggested_actions: string[];
+};
+
+export const SupportAPI = {
+  list: (params?: { status?: string; category?: string; priority?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.category) q.set("category", params.category);
+    if (params?.priority) q.set("priority", params.priority);
+    const qs = q.toString();
+    return apiFetch(`/api/v1/support/${qs ? "?" + qs : ""}`) as Promise<SupportTicket[]>;
+  },
+  get: (id: string) => apiFetch(`/api/v1/support/${id}`) as Promise<SupportTicket>,
+  create: (data: { title: string; description: string; category?: string; priority?: string; client_id?: string }) =>
+    apiFetch("/api/v1/support/", { method: "POST", body: JSON.stringify(data) }) as Promise<SupportTicket>,
+  update: (id: string, data: Partial<SupportTicket>) =>
+    apiFetch(`/api/v1/support/${id}`, { method: "PATCH", body: JSON.stringify(data) }) as Promise<SupportTicket>,
+  remove: (id: string) => apiFetch(`/api/v1/support/${id}`, { method: "DELETE" }) as Promise<{ message: string }>,
+  stats: () => apiFetch("/api/v1/support/stats/summary") as Promise<SupportTicketStats>,
+  chatbot: (message: ChatbotMessage) =>
+    apiFetch("/api/v1/support/chatbot", { method: "POST", body: JSON.stringify(message) }) as Promise<ChatbotResponse>,
+};

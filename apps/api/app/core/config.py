@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:3001"
+    # n8n Webhook
+    n8n_webhook_url: str = ""
     # Security
     bcrypt_rounds: int = 12
     rate_limit_per_min: int = 100
