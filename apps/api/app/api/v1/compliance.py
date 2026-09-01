@@ -31,11 +31,146 @@ COMPLIANCE_CODES = [
 ]
 COMPLIANCE_FREQUENCIES = ["Monthly", "Quarterly", "Annually", "One-time"]
 
+# Step-by-step filing checklists (doc §7 workflows) — one checklist per compliance code.
+FILING_CHECKLISTS: dict[str, dict] = {
+    "GSTR1": {
+        "code": "GSTR1",
+        "name": "GSTR-1 (Outbound invoices)",
+        "frequency": "Monthly",
+        "due_rule": "11th of following month",
+        "items": [
+            "Verify all sales invoices recorded in books",
+            "Reconcile with GSTR-2B/2A",
+            "Check HSN-wise summary totals",
+            "Export JSON from accounting software",
+            "File on GST portal before deadline",
+            "Download acknowledgement",
+        ],
+    },
+    "GSTR3B": {
+        "code": "GSTR3B",
+        "name": "GSTR-3B (Summary return + tax payment)",
+        "frequency": "Monthly",
+        "due_rule": "20th of following month",
+        "items": [
+            "Reconcile with GSTR-1 filed",
+            "Compute tax liability (IGST/CGST/SGST)",
+            "Set off eligible ITC",
+            "Pay balance via GST challan",
+            "File GSTR-3B with payment confirmation",
+            "Download acknowledgement",
+        ],
+    },
+    "GSTR9": {
+        "code": "GSTR9",
+        "name": "GSTR-9 (Annual return)",
+        "frequency": "Annually",
+        "due_rule": "31st December of following FY",
+        "items": [
+            "Reconcile books with GSTR-1 and 3B",
+            "Verify turnover declared matches audited figures",
+            "Check tax paid vs liability",
+            "Disclose any additional tax demands",
+            "File on GST portal",
+        ],
+    },
+    "ITR_NON_AUDIT": {
+        "code": "ITR_NON_AUDIT",
+        "name": "ITR Individual/HUF (non-audit)",
+        "frequency": "Annually",
+        "due_rule": "31st July",
+        "items": [
+            "Collect Form 16 / TDS certificates",
+            "Compute total income",
+            "Verify capital gains statements from broker",
+            "Check 26AS / AIS",
+            "File ITR-1 / ITR-2 via income tax portal",
+            "Verify ITR-V acknowledgement",
+        ],
+    },
+    "ITR_AUDIT": {
+        "code": "ITR_AUDIT",
+        "name": "ITR Company/Audit Cases",
+        "frequency": "Annually",
+        "due_rule": "31st October",
+        "items": [
+            "Complete tax audit (Form 3CA/3CB + 3CD)",
+            "Compute book profit u/s 115JB",
+            "Reconcile MAT vs regular tax",
+            "File ITR-3/ITR-6",
+            "E-verify via DSC or EVC",
+        ],
+    },
+    "TDS_26Q": {
+        "code": "TDS_26Q",
+        "name": "TDS Return 26Q/24Q",
+        "frequency": "Quarterly",
+        "due_rule": "31st of month following quarter",
+        "items": [
+            "Reconcile TDS deposited with challans",
+            "Verify TAN and deductee PANs",
+            "Check TDS rates applied correctly",
+            "Prepare 26Q/24Q statement",
+            "File on TRACES portal",
+        ],
+    },
+    "ADV_TAX": {
+        "code": "ADV_TAX",
+        "name": "Advance Tax Instalment",
+        "frequency": "Quarterly",
+        "due_rule": "15th Jun (15%), 15th Sep (45%), 15th Dec (75%), 15th Mar (100%)",
+        "items": [
+            "Estimate current year income",
+            "Compute tax liability",
+            "Calculate instalment due (cumulative %)",
+            "Pay via challan 280",
+            "Record in books and 26Q",
+        ],
+    },
+    "ROC_MGT7": {
+        "code": "ROC_MGT7",
+        "name": "ROC Annual Return MGT-7",
+        "frequency": "Annually",
+        "due_rule": "60 days from AGM date",
+        "items": [
+            "Update register of members",
+            "Compile shareholding pattern",
+            "Verify board composition",
+            "File MGT-7 on MCA portal",
+            "Pay filing fee",
+        ],
+    },
+    "ROC_AOC4": {
+        "code": "ROC_AOC4",
+        "name": "Financial Statements AOC-4",
+        "frequency": "Annually",
+        "due_rule": "30 days from AGM",
+        "items": [
+            "Finalize audited financials",
+            "Attach director's report",
+            "Attach auditor's report",
+            "File AOC-4 on MCA portal",
+        ],
+    },
+}
+
+
+def _checklist_progress_counts(compliance_code: str, progress: Optional[dict]) -> tuple:
+    """Return (done, total) for a filing's checklist progress."""
+    items = FILING_CHECKLISTS.get(compliance_code, {}).get("items", [])
+    total = len(items)
+    if not progress:
+        return 0, total
+    done = sum(1 for i in range(total) if progress.get(str(i)) is True)
+    return done, total
+
+
 class ComplianceFilingUpdate(BaseModel):
     status: Optional[str] = Field(None, description="Filed/Pending/Overdue")
     filed_at: Optional[str] = None
     acknowledgement_ref: Optional[str] = None
     notes: Optional[str] = None
+    checklist_progress: Optional[dict] = Field(None, description="{'0': true, '1': false, ...} step completion")
 
 class ComplianceFilingCreate(BaseModel):
     client_id: str
@@ -72,8 +207,25 @@ class ComplianceFilingResponse(FirestoreOut):
     filed_at: Optional[str] = None
     acknowledgement_ref: Optional[str] = None
     notes: Optional[str] = None
+    checklist_progress: Optional[dict] = None
+    checklist_done: Optional[int] = None
+    checklist_total: Optional[int] = None
     created_at: str
     updated_at: Optional[str] = None
+
+
+def _filing_out(data: dict) -> ComplianceFilingResponse:
+    """Build a compliance filing response with health + checklist progress computed on read."""
+    data = dict(data)
+    try:
+        due = date.fromisoformat(data.get("actual_due_date", ""))
+        data["health"] = _status_for_due_date(due)
+    except (ValueError, TypeError):
+        data["health"] = "Green"
+    done, total = _checklist_progress_counts(data.get("compliance_code", ""), data.get("checklist_progress"))
+    data["checklist_done"] = done
+    data["checklist_total"] = total
+    return ComplianceFilingResponse(**data)
 
 
 # ── Routes ────────────────────────────────────────────────────────
@@ -124,7 +276,7 @@ async def compliance_calendar(
             continue
         if health and data["health"] != health:
             continue
-        results.append(ComplianceFilingResponse(**data))
+        results.append(_filing_out(data))
     return results
 
 
@@ -157,6 +309,7 @@ async def create_filing(
         "filed_at": None,
         "acknowledgement_ref": None,
         "notes": body.notes,
+        "checklist_progress": None,
         "created_at": now,
         "updated_at": None,
     }
@@ -165,10 +318,7 @@ async def create_filing(
     from app.core.audit import log_audit
     await log_audit(tenant_id=tenant_id, actor_id="system", action="CREATE", entity="complianceFilings", entity_id=filing_id)
 
-    # Decorate with computed fields
-    due = date.fromisoformat(body.actual_due_date)
-    filing_doc["health"] = _status_for_due_date(due)
-    return ComplianceFilingResponse(**filing_doc)
+    return _filing_out(filing_doc)
 
 
 @router.patch("/filings/{filing_id}", response_model=ComplianceFilingResponse)
@@ -197,11 +347,9 @@ async def update_filing(
     await log_audit(tenant_id=tenant_id, actor_id="system", action="UPDATE", entity="complianceFilings", entity_id=filing_id)
 
     doc = db.collection("complianceFilings").document(filing_id).get()
-    data = doc.to_dict()
+    data = dict(doc.to_dict())
     data["id"] = doc.id
-    due = date.fromisoformat(data.get("actual_due_date", ""))
-    data["health"] = _status_for_due_date(due)
-    return ComplianceFilingResponse(**data)
+    return _filing_out(data)
 
 
 @router.get("/health")
@@ -253,128 +401,7 @@ async def get_checklist(
     compliance_code: str,
     _: None = Depends(require_permission("compliance", "view"))
 ):
-    """Return a filing checklist for a given compliance code (per PDF p.12-14)."""
-    checklists = {
-        "GSTR1": {
-            "code": "GSTR1",
-            "name": "GSTR-1 (Outbound invoices)",
-            "frequency": "Monthly",
-            "due_rule": "11th of following month",
-            "items": [
-                "Verify all sales invoices recorded in books",
-                "Reconcile with GSTR-2B/2A",
-                "Check HSN-wise summary totals",
-                "Export JSON from accounting software",
-                "File on GST portal before deadline",
-                "Download acknowledgement",
-            ],
-        },
-        "GSTR3B": {
-            "code": "GSTR3B",
-            "name": "GSTR-3B (Summary return + tax payment)",
-            "frequency": "Monthly",
-            "due_rule": "20th of following month",
-            "items": [
-                "Reconcile with GSTR-1 filed",
-                "Compute tax liability (IGST/CGST/SGST)",
-                "Set off eligible ITC",
-                "Pay balance via GST challan",
-                "File GSTR-3B with payment confirmation",
-                "Download acknowledgement",
-            ],
-        },
-        "GSTR9": {
-            "code": "GSTR9",
-            "name": "GSTR-9 (Annual return)",
-            "frequency": "Annually",
-            "due_rule": "31st December of following FY",
-            "items": [
-                "Reconcile books with GSTR-1 and 3B",
-                "Verify turnover declared matches audited figures",
-                "Check tax paid vs liability",
-                "Disclose any additional tax demands",
-                "File on GST portal",
-            ],
-        },
-        "ITR_NON_AUDIT": {
-            "code": "ITR_NON_AUDIT",
-            "name": "ITR Individual/HUF (non-audit)",
-            "frequency": "Annually",
-            "due_rule": "31st July",
-            "items": [
-                "Collect Form 16 / TDS certificates",
-                "Compute total income",
-                "Verify capital gains statements from broker",
-                "Check 26AS / AIS",
-                "File ITR-1 / ITR-2 via income tax portal",
-                "Verify ITR-V acknowledgement",
-            ],
-        },
-        "ITR_AUDIT": {
-            "code": "ITR_AUDIT",
-            "name": "ITR Company/Audit Cases",
-            "frequency": "Annually",
-            "due_rule": "31st October",
-            "items": [
-                "Complete tax audit (Form 3CA/3CB + 3CD)",
-                "Compute book profit u/s 115JB",
-                "Reconcile MAT vs regular tax",
-                "File ITR-3/ITR-6",
-                "E-verify via DSC or EVC",
-            ],
-        },
-        "TDS_26Q": {
-            "code": "TDS_26Q",
-            "name": "TDS Return 26Q/24Q",
-            "frequency": "Quarterly",
-            "due_rule": "31st of month following quarter",
-            "items": [
-                "Reconcile TDS deposited with challans",
-                "Verify TAN and deductee PANs",
-                "Check TDS rates applied correctly",
-                "Prepare 26Q/24Q statement",
-                "File on TRACES portal",
-            ],
-        },
-        "ADV_TAX": {
-            "code": "ADV_TAX",
-            "name": "Advance Tax Instalment",
-            "frequency": "Quarterly",
-            "due_rule": "15th Jun (15%), 15th Sep (45%), 15th Dec (75%), 15th Mar (100%)",
-            "items": [
-                "Estimate current year income",
-                "Compute tax liability",
-                "Calculate instalment due (cumulative %)",
-                "Pay via challan 280",
-                "Record in books and 26Q",
-            ],
-        },
-        "ROC_MGT7": {
-            "code": "ROC_MGT7",
-            "name": "ROC Annual Return MGT-7",
-            "frequency": "Annually",
-            "due_rule": "60 days from AGM date",
-            "items": [
-                "Update register of members",
-                "Compile shareholding pattern",
-                "Verify board composition",
-                "File MGT-7 on MCA portal",
-                "Pay filing fee",
-            ],
-        },
-        "ROC_AOC4": {
-            "code": "ROC_AOC4",
-            "name": "Financial Statements AOC-4",
-            "frequency": "Annually",
-            "due_rule": "30 days from AGM",
-            "items": [
-                "Finalize audited financials",
-                "Attach director's report",
-                "Attach auditor's report",
-                "File AOC-4 on MCA portal",
-            ],
-        },
-    }
-    if compliance_code not in checklists:
+    """Return a filing checklist for a given compliance code (per PDF p.12-14) — step-by-step guide."""
+    if compliance_code not in FILING_CHECKLISTS:
         raise HTTPException(status_code=404, detail=f"Checklist not defined for {compliance_code}")
-    return checklists[compliance_code]
+    return FILING_CHECKLISTS[compliance_code]

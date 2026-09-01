@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Users, ClipboardList, CalendarCheck, Files, Receipt, KeyRound, ShieldCheck, Building2 } from "lucide-react";
+import { LayoutDashboard, Users, ClipboardList, CalendarCheck, Files, Receipt, KeyRound, ShieldCheck, Building2, BarChart3, Briefcase } from "lucide-react";
 
 export const navItems = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, roles: ["all"] },
@@ -12,6 +12,8 @@ export const navItems = [
   { href: "/documents", label: "Documents", icon: Files, roles: ["all"] },
   { href: "/billing", label: "Billing", icon: Receipt, roles: ["Firm Admin", "Partner", "Manager"] },
   { href: "/credentials", label: "Vault", icon: KeyRound, roles: ["Firm Admin", "Partner", "Manager"] },
+  { href: "/reports", label: "Reports", icon: BarChart3, roles: ["Firm Admin", "Partner"] },
+  { href: "/bd", label: "Business Dev", icon: Briefcase, roles: ["Firm Admin", "Partner"] },
   { href: "/audit", label: "Audit", icon: ShieldCheck, roles: ["Firm Admin", "Partner"] },
 ];
 

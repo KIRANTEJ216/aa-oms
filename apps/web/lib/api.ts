@@ -26,8 +26,10 @@ export type Client = {
   gstin?: string; tan?: string; cin?: string; llpin?: string;
   email: string; mobile: string; address: string;
   engagement_manager: string; services: string[]; is_portal_enabled: boolean;
-  dob_or_incorporation: string; created_at: string; updated_at?: string;
+  dob_or_incorporation: string; aadhaar_masked?: string; has_aadhaar?: boolean;
+  created_at: string; updated_at?: string;
 };
+export type ClientPayload = Partial<Omit<Client, "id" | "tenant_id" | "aadhaar_masked" | "has_aadhaar" | "created_at" | "updated_at">> & { aadhaar?: string };
 
 export type Task = {
   id: string; tenant_id: string; type: string; title: string; description: string;
@@ -49,6 +51,8 @@ export type ComplianceFiling = {
   compliance_code: string; compliance_name?: string; period: string;
   actual_due_date: string; status: string; health: "Green" | "Amber" | "Red";
   filed_at?: string; acknowledgement_ref?: string; notes?: string;
+  checklist_progress?: Record<string, boolean>;
+  checklist_done?: number; checklist_total?: number;
   created_at: string; updated_at?: string;
 };
 export type ComplianceHealth = {
@@ -69,12 +73,26 @@ export type DocumentShare = { id: string; document_id: string; mode: string; exp
 
 export type Credential = {
   id: string; tenant_id: string; client_id?: string; name: string;
+  portal?: string; portal_label?: string;
   url?: string; username_masked: string; notes?: string;
+  expires_at?: string; days_to_expiry?: number; expiry_status?: "expired" | "expiring_soon" | "ok";
   created_at: string; updated_at?: string; last_accessed_at?: string; access_count: number;
 };
 export type CredentialReveal = {
-  id: string; name: string; username: string; password: string;
-  url?: string; notes?: string; revealed_at: string;
+  id: string; name: string; portal?: string; username: string; password: string;
+  url?: string; notes?: string; expires_at?: string; revealed_at: string;
+};
+export type PortalInfo = { key: string; label: string; url: string; expiry_hint: string };
+export type ClientChecklistEntry = {
+  portal: string; label: string; url: string; expiry_hint: string;
+  collected: boolean; count: number;
+  credentials: Array<{ id: string; name: string; portal?: string; username_masked: string; expires_at?: string; days_to_expiry?: number; expiry_status?: string }>;
+};
+export type ClientChecklist = {
+  client_id: string; client_name: string;
+  portals: ClientChecklistEntry[];
+  collected_count: number; pending_count: number; total: number;
+  other_credentials: Array<{ id: string; name: string; portal?: string; username_masked: string }>;
 };
 export type AccessLog = {
   id: string; credential_id: string; credential_name: string;
@@ -90,6 +108,24 @@ export type Invoice = {
 export type Payment = { id: string; invoice_id: string; amount: number; payment_method: string; payment_date: string; status: string };
 export type AgingReport = { buckets: Record<string, number>; total: number };
 
+export type AgingDetail = { summary: Record<string, { amount: number; count: number }>; total_outstanding: number; total_invoices: number; detail: Record<string, { amount: number; count: number; invoices: Array<{ id: string; invoice_number: string; client_id: string; client_name: string; outstanding: number; due_date: string }> }> };
+export type RevenueByClientRow = { client_id: string; client_name: string; billed: number; collected: number; outstanding: number; invoice_count: number };
+export type RevenueByServiceRow = { service: string; sac_code: string; amount: number; gst: number; total: number; invoice_count: number };
+export type GstLiability = { totals: { cgst: number; sgst: number; igst: number; total: number }; monthly: Array<{ month: string; cgst: number; sgst: number; igst: number; total: number; invoice_count: number }> };
+export type MonthlyMIS = { rows: Array<{ month: string; billed: number; collected: number; outstanding: number; invoice_count: number; collection_rate: number }>; totals: { billed: number; collected: number; outstanding: number; collection_rate: number } };
+
+export type BDLead = {
+  id: string; tenant_id: string; company_name: string;
+  contact_name?: string; email?: string; phone?: string; source?: string;
+  status: "New" | "Contacted" | "Meeting Scheduled" | "Proposal Sent" | "Won" | "Lost";
+  priority: "High" | "Medium" | "Low";
+  estimated_value?: number; services?: string[]; owner: string;
+  next_follow_up?: string; is_overdue?: boolean; notes?: string;
+  created_at: string; updated_at?: string;
+};
+export type BDFollowUp = { id: string; lead_id: string; type: string; summary: string; scheduled_for?: string; done: boolean; created_by: string; created_at: string };
+export type BDSummary = { by_status: Record<string, number>; total: number; won_value: number; pipeline_value: number; upcoming: Array<{ id: string; company_name: string; due_date: string; days_left: number }> };
+
 export type AuditEntry = {
   id: string; actorId?: string | null; action?: string | null; entity?: string | null;
   entityId?: string | null; method?: string | null; path?: string | null; ip?: string | null;
@@ -100,8 +136,8 @@ export type AuditEntry = {
 export const ClientsAPI = {
   list: () => apiFetch("/api/v1/clients/") as Promise<Client[]>,
   get: (id: string) => apiFetch(`/api/v1/clients/${id}`) as Promise<Client>,
-  create: (data: Partial<Client>) => apiFetch("/api/v1/clients/", { method: "POST", body: JSON.stringify(data) }) as Promise<Client>,
-  update: (id: string, data: Partial<Client>) => apiFetch(`/api/v1/clients/${id}`, { method: "PATCH", body: JSON.stringify(data) }) as Promise<Client>,
+  create: (data: ClientPayload) => apiFetch("/api/v1/clients/", { method: "POST", body: JSON.stringify(data) }) as Promise<Client>,
+  update: (id: string, data: ClientPayload) => apiFetch(`/api/v1/clients/${id}`, { method: "PATCH", body: JSON.stringify(data) }) as Promise<Client>,
   remove: (id: string) => apiFetch(`/api/v1/clients/${id}`, { method: "DELETE" }) as Promise<{ message: string }>,
 };
 
@@ -165,9 +201,11 @@ export const CredentialsAPI = {
     const q = clientId ? `?client_id=${clientId}` : "";
     return apiFetch(`/api/v1/credentials/${q}`) as Promise<Credential[]>;
   },
-  create: (data: { name: string; client_id?: string; url?: string; username: string; password: string; notes?: string }) =>
+  portals: () => apiFetch("/api/v1/credentials/portals") as Promise<{ portals: PortalInfo[]; default_expire_days: number }>,
+  checklist: (clientId: string) => apiFetch(`/api/v1/credentials/checklist?client_id=${clientId}`) as Promise<ClientChecklist>,
+  create: (data: { name: string; client_id?: string; portal?: string; url?: string; username: string; password: string; notes?: string; expires_at?: string }) =>
     apiFetch("/api/v1/credentials/", { method: "POST", body: JSON.stringify(data) }) as Promise<Credential>,
-  update: (id: string, data: { name?: string; url?: string; username?: string; password?: string; notes?: string }) =>
+  update: (id: string, data: { name?: string; portal?: string; url?: string; username?: string; password?: string; notes?: string; expires_at?: string }) =>
     apiFetch(`/api/v1/credentials/${id}`, { method: "PATCH", body: JSON.stringify(data) }) as Promise<Credential>,
   remove: (id: string) => apiFetch(`/api/v1/credentials/${id}`, { method: "DELETE" }) as Promise<{ message: string }>,
   reveal: (id: string) => apiFetch(`/api/v1/credentials/${id}/reveal`, { method: "POST" }) as Promise<CredentialReveal>,
@@ -175,6 +213,32 @@ export const CredentialsAPI = {
     const q = credentialId ? `?credential_id=${credentialId}` : "";
     return apiFetch(`/api/v1/credentials/access-logs${q}`) as Promise<AccessLog[]>;
   },
+};
+
+export const ReportsAPI = {
+  aging: () => apiFetch("/api/v1/reports/receivables-aging") as Promise<AgingDetail>,
+  revenueByClient: () => apiFetch("/api/v1/reports/revenue-by-client") as Promise<{ rows: RevenueByClientRow[]; grand_total: number }>,
+  revenueByService: () => apiFetch("/api/v1/reports/revenue-by-service") as Promise<{ rows: RevenueByServiceRow[]; grand_total: number }>,
+  gstLiability: () => apiFetch("/api/v1/reports/gst-liability") as Promise<GstLiability>,
+  monthlyMIS: () => apiFetch("/api/v1/reports/monthly-mis") as Promise<MonthlyMIS>,
+};
+
+export const BDAPI = {
+  list: (params?: { status?: string; owner?: string; priority?: string }) => {
+    const q = new URLSearchParams();
+    if (params?.status) q.set("status", params.status);
+    if (params?.owner) q.set("owner", params.owner);
+    if (params?.priority) q.set("priority", params.priority);
+    const qs = q.toString();
+    return apiFetch(`/api/v1/bd/leads${qs ? "?" + qs : ""}`) as Promise<BDLead[]>;
+  },
+  summary: () => apiFetch("/api/v1/bd/leads/summary") as Promise<BDSummary>,
+  create: (data: Partial<BDLead>) => apiFetch("/api/v1/bd/leads", { method: "POST", body: JSON.stringify(data) }) as Promise<BDLead>,
+  update: (id: string, data: Partial<BDLead>) => apiFetch(`/api/v1/bd/leads/${id}`, { method: "PATCH", body: JSON.stringify(data) }) as Promise<BDLead>,
+  remove: (id: string) => apiFetch(`/api/v1/bd/leads/${id}`, { method: "DELETE" }) as Promise<{ message: string }>,
+  followUps: (leadId: string) => apiFetch(`/api/v1/bd/leads/${leadId}/followups`) as Promise<BDFollowUp[]>,
+  addFollowUp: (leadId: string, data: { type: string; summary: string; scheduled_for?: string }) =>
+    apiFetch(`/api/v1/bd/leads/${leadId}/followups`, { method: "POST", body: JSON.stringify(data) }) as Promise<BDFollowUp>,
 };
 
 // Helper: file to base64 (browser)

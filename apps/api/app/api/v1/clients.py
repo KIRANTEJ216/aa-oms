@@ -8,6 +8,7 @@ from app.core.security import hash_password, verify_password
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant, SEED_TENANT_ID
 from app.core.rbac import require_permission
+from app.infra.secrets.client import encrypt_value, mask_value, mask_aadhaar
 from pydantic import BaseModel, Field, EmailStr, validator
 import re
 
@@ -17,6 +18,7 @@ router = APIRouter()
 CLIENT_PAN_REGEX = r'^[A-Z]{5}[0-9]{4}[A-Z]$'
 CLIENT_GSTIN_REGEX = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z$'
 CLIENT_TAN_REGEX = r'^[A-Z]{4}[0-9]{5}[A-Z]$'
+CLIENT_AADHAAR_REGEX = r'^\d{4}\s?\d{4}\s?\d{4}$'
 
 class ClientCreate(BaseModel):
     type: str = Field(..., description="Individual/HUF/Company/LLP/Trust")
@@ -33,6 +35,16 @@ class ClientCreate(BaseModel):
     engagement_manager: str = Field(..., description="Partner name / staff in charge")
     services: List[str] = Field(default_factory=list)
     is_portal_enabled: bool = False
+    aadhaar: Optional[str] = Field(None, description="12-digit Aadhaar (stored encrypted, never returned plaintext)")
+
+    @validator('aadhaar')
+    def validate_aadhaar(cls, v):
+        if v:
+            digits = re.sub(r'\s+', '', v)
+            if not re.match(r'^\d{12}$', digits):
+                raise ValueError('Invalid Aadhaar format. Expected: 12 digits (e.g. 1234 5678 9012)')
+            return digits
+        return v
 
     @validator('pan')
     def validate_pan(cls, v):
@@ -60,6 +72,16 @@ class ClientUpdate(BaseModel):
     engagement_manager: Optional[str] = None
     services: Optional[List[str]] = None
     is_portal_enabled: Optional[bool] = None
+    aadhaar: Optional[str] = None
+
+    @validator('aadhaar')
+    def validate_aadhaar(cls, v):
+        if v:
+            digits = re.sub(r'\s+', '', v)
+            if not re.match(r'^\d{12}$', digits):
+                raise ValueError('Invalid Aadhaar format. Expected: 12 digits (e.g. 1234 5678 9012)')
+            return digits
+        return v
 
 class ClientResponse(FirestoreOut):
     id: str
@@ -78,11 +100,26 @@ class ClientResponse(FirestoreOut):
     services: List[str]
     is_portal_enabled: bool
     dob_or_incorporation: str
+    aadhaar_masked: Optional[str] = None
+    has_aadhaar: bool = False
     created_at: str
     updated_at: Optional[str]
 
     class Config:
         from_attributes = True
+
+
+def _client_out(doc: dict) -> ClientResponse:
+    """Build ClientResponse with aadhaar minimal-disclosure (masked, never plaintext)."""
+    data = dict(doc)
+    enc = data.get("aadhaarEnc")
+    if enc:
+        data["aadhaar_masked"] = mask_aadhaar(enc)
+        data["has_aadhaar"] = True
+    else:
+        data["aadhaar_masked"] = None
+        data["has_aadhaar"] = False
+    return ClientResponse(**data)
 
 
 # ── Routes ───────────────────────────────────────────────────────
@@ -95,13 +132,12 @@ async def list_clients(
     db = get_db()
     tenant_id = get_current_tenant()
     docs = list(db.collection("clients").where("tenant_id", "==", tenant_id).stream())
-    return [
-        ClientResponse(
-            id=doc.id,
-            **{k: v for k, v in doc.to_dict().items() if k != "id"}
-        )
-        for doc in docs
-    ]
+    out = []
+    for doc in docs:
+        data = dict(doc.to_dict())
+        data["id"] = doc.id
+        out.append(_client_out(data))
+    return out
 
 @router.post("/", response_model=ClientResponse, status_code=201)
 async def create_client(
@@ -146,13 +182,15 @@ async def create_client(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": None,
     }
+    if client.aadhaar:
+        client_doc["aadhaarEnc"] = encrypt_value(client.aadhaar)
 
     db.collection("clients").document(client_id).set(client_doc)
     
     from app.core.audit import log_audit
     await log_audit(tenant_id=tenant_id, actor_id=client_id, action="CREATE", entity="clients", entity_id=client_id)
     
-    return ClientResponse(**client_doc)
+    return _client_out(client_doc)
 
 @router.get("/{client_id}", response_model=ClientResponse)
 async def get_client(
@@ -167,7 +205,9 @@ async def get_client(
         raise HTTPException(status_code=404, detail="Client not found")
     if doc.to_dict().get("tenant_id") != tenant_id:
         raise HTTPException(status_code=403, detail="Cross-tenant access denied")
-    return ClientResponse(**doc.to_dict())
+    data = dict(doc.to_dict())
+    data["id"] = doc.id
+    return _client_out(data)
 
 @router.patch("/{client_id}", response_model=ClientResponse)
 async def update_client(
@@ -185,6 +225,14 @@ async def update_client(
         raise HTTPException(status_code=403, detail="Cross-tenant access denied")
     
     update_data = {k: v for k, v in client_update.dict().items() if v is not None}
+    if "aadhaar" in update_data:
+        if update_data["aadhaar"]:
+            update_data["aadhaarEnc"] = encrypt_value(update_data["aadhaar"])
+            update_data["has_aadhaar"] = True
+        else:
+            update_data["aadhaarEnc"] = None
+            update_data["has_aadhaar"] = False
+        del update_data["aadhaar"]
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     
     db.collection("clients").document(client_id).update(update_data)
@@ -193,7 +241,9 @@ async def update_client(
     await log_audit(tenant_id=tenant_id, actor_id="system", action="UPDATE", entity="clients", entity_id=client_id)
     
     doc = db.collection("clients").document(client_id).get()
-    return ClientResponse(**doc.to_dict())
+    data = dict(doc.to_dict())
+    data["id"] = doc.id
+    return _client_out(data)
 
 @router.delete("/{client_id}")
 async def delete_client(

@@ -5,12 +5,14 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from app.api.v1 import agent as agent_router
 from app.api.v1 import audit as audit_router
 from app.api.v1 import auth as auth_router
+from app.api.v1 import bd as bd_router
 from app.api.v1 import billing as billing_router
 from app.api.v1 import clients as clients_router
 from app.api.v1 import compliance as compliance_router
 from app.api.v1 import credentials as credentials_router
 from app.api.v1 import documents as documents_router
 from app.api.v1 import health as health_router
+from app.api.v1 import reports as reports_router
 from app.api.v1 import tasks as tasks_router
 from app.core.audit import audit_middleware
 from app.core.config import get_settings
@@ -45,6 +47,8 @@ def create_app() -> FastAPI:
     app.include_router(billing_router.router, prefix='/api/v1/billing', tags=['billing'])
     app.include_router(agent_router.router, prefix='/api/v1/agent', tags=['agent'])
     app.include_router(audit_router.router, prefix='/api/v1/audit', tags=['audit'])
+    app.include_router(reports_router.router, prefix='/api/v1/reports', tags=['reports'])
+    app.include_router(bd_router.router, prefix='/api/v1/bd', tags=['bd'])
 
     @app.get('/', tags=['root'])
     async def root():

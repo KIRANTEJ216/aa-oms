@@ -25,6 +25,7 @@ export default function CompliancePage() {
   const [showCreate, setShowCreate] = useState(false);
   const [checklistCode, setChecklistCode] = useState<string | null>(null);
   const [checklistItems, setChecklistItems] = useState<string[]>([]);
+  const [filingChecklist, setFilingChecklist] = useState<{ filing: ComplianceFiling; items: string[]; progress: Record<string, boolean> } | null>(null);
 
   async function refresh() {
     setLoading(true);
@@ -54,6 +55,38 @@ export default function CompliancePage() {
       const c = await ComplianceAPI.checklist(code);
       setChecklistCode(code);
       setChecklistItems(c.items);
+    } catch (e: any) { setError(e.message); }
+  }
+
+  async function openFilingChecklist(filing: ComplianceFiling) {
+    try {
+      const c = await ComplianceAPI.checklist(filing.compliance_code);
+      setFilingChecklist({
+        filing,
+        items: c.items,
+        progress: filing.checklist_progress || {},
+      });
+    } catch (e: any) { setError(e.message); }
+  }
+
+  async function toggleStep(filingId: string, index: number, checked: boolean) {
+    const fc = filingChecklist;
+    if (!fc) return;
+    const progress = { ...fc.progress, [String(index)]: checked };
+    const allDone = fc.items.every((_, i) => progress[String(i)] === true);
+    setFilingChecklist({ ...fc, progress });
+    // Auto-flip status to Filed when all steps done; back to Pending if any unchecked
+    if (allDone && fc.filing.status !== "Filed") await toggleFiled(filingId, true);
+    else if (!allDone && fc.filing.status === "Filed") await toggleFiled(filingId, false);
+    try {
+      const updated = await ComplianceAPI.updateFiling(filingId, { checklist_progress: progress });
+      setFilings(fl => fl.map(f => (f.id === filingId ? updated : f)));
+    } catch (e: any) { setError(e.message); }
+  }
+
+  async function toggleFiled(id: string, filed: boolean) {
+    try {
+      await ComplianceAPI.updateFiling(id, filed ? { status: "Filed", filed_at: new Date().toISOString().slice(0,10) } : { status: "Pending", filed_at: null as any });
     } catch (e: any) { setError(e.message); }
   }
 
@@ -145,6 +178,7 @@ export default function CompliancePage() {
                 <th className="text-left p-3">Due</th>
                 <th className="text-left p-3">Status</th>
                 <th className="text-left p-3">Health</th>
+                <th className="text-left p-3">Step progress</th>
                 <th className="p-3"></th>
               </tr>
             </thead>
@@ -169,8 +203,18 @@ export default function CompliancePage() {
                     <td className="p-3">
                       <span className={`rounded-full px-2 py-0.5 text-xs ${style.bg} ${style.text}`}>{f.health}</span>
                     </td>
+                    <td className="p-3">
+                      {f.checklist_total ? (
+                        <div className="flex items-center gap-1.5">
+                          <div className="w-14 bg-slate-100 rounded-full h-1.5 overflow-hidden">
+                            <div className="h-full bg-blue-600" style={{ width: `${Math.round(((f.checklist_done || 0) / f.checklist_total) * 100)}%` }} />
+                          </div>
+                          <span className="text-xs text-slate-500 whitespace-nowrap">{f.checklist_done}/{f.checklist_total} steps</span>
+                        </div>
+                      ) : <span className="text-slate-300 text-xs">—</span>}
+                    </td>
                     <td className="p-3 text-right">
-                      <Button variant="outline" size="sm" onClick={() => openChecklist(f.compliance_code)}>
+                      <Button variant="outline" size="sm" onClick={() => openFilingChecklist(f)}>
                         <ListChecks className="h-3 w-3 mr-1" /> Checklist
                       </Button>
                     </td>
@@ -178,7 +222,7 @@ export default function CompliancePage() {
                 );
               })}
               {filtered.length === 0 && !loading && (
-                <tr><td colSpan={7} className="p-6 text-center text-slate-400 italic">No filings — create one to get started.</td></tr>
+                <tr><td colSpan={8} className="p-6 text-center text-slate-400 italic">No filings — create one to get started.</td></tr>
               )}
             </tbody>
           </table>
@@ -206,7 +250,7 @@ export default function CompliancePage() {
         </CardContent>
       </Card>
 
-      {/* Checklist modal */}
+      {/* Read-only reference checklist modal (compliance types) */}
       {checklistCode && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setChecklistCode(null)}>
           <Card className="w-full max-w-md" onClick={e => e.stopPropagation()}>
@@ -222,6 +266,46 @@ export default function CompliancePage() {
               </ol>
               <div className="flex justify-end mt-4">
                 <Button variant="outline" onClick={() => setChecklistCode(null)}>Close</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Filing checklist modal with step checkboxes */}
+      {filingChecklist && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50" onClick={() => setFilingChecklist(null)}>
+          <Card className="w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            <CardHeader>
+              <CardTitle>{filingChecklist.filing.compliance_code} — Filing Checklist</CardTitle>
+              <CardDescription>
+                {filingChecklist.filing.client_name || filingChecklist.filing.client_id} · {filingChecklist.filing.period} · due {filingChecklist.filing.actual_due_date}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-3 text-sm">
+                {filingChecklist.items.map((item, i) => {
+                  const checked = filingChecklist.progress[String(i)] === true;
+                  return (
+                    <label key={i} className={`flex items-start gap-2 rounded-md border p-2 cursor-pointer transition ${checked ? "bg-green-50 border-green-200" : "hover:bg-slate-50"}`}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={e => toggleStep(filingChecklist.filing.id, i, e.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-green-600"
+                      />
+                      <span className={checked ? "line-through text-slate-500" : ""}>{i + 1}. {item}</span>
+                    </label>
+                  );
+                })}
+                <p className="text-xs text-slate-500">
+                  {filingChecklist.items.filter((_, i) => filingChecklist.progress[String(i)] === true).length}/{filingChecklist.items.length} steps done
+                  {filingChecklist.items.every((_, i) => filingChecklist.progress[String(i)] === true) && <span className="text-green-700 font-medium"> — all steps complete, filing marked as Filed ✓</span>}
+                </p>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setFilingChecklist(null)}>Close</Button>
+                  <Button variant="outline" onClick={() => markFiled(filingChecklist.filing.id)}>Mark filed</Button>
+                </div>
               </div>
             </CardContent>
           </Card>

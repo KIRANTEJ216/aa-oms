@@ -86,6 +86,7 @@ export default function ClientsPage() {
                   <th className="text-left p-3">Client</th>
                   <th className="text-left p-3">Type</th>
                   <th className="text-left p-3">PAN</th>
+                  <th className="text-left p-3">Aadhaar</th>
                   <th className="text-left p-3">GSTIN</th>
                   <th className="text-left p-3">Contact</th>
                   <th className="text-left p-3">Services</th>
@@ -101,6 +102,9 @@ export default function ClientsPage() {
                     </td>
                     <td className="p-3"><span className="rounded bg-slate-100 text-slate-700 text-xs px-2 py-0.5">{c.type}</span></td>
                     <td className="p-3 font-mono text-xs">{c.pan}</td>
+                    <td className="p-3 font-mono text-xs">
+                      {c.aadhaar_masked ? <span title="Aadhaar stored encrypted, shown masked">{c.aadhaar_masked}</span> : <span className="text-slate-300">—</span>}
+                    </td>
                     <td className="p-3 font-mono text-xs">{c.gstin || "—"}</td>
                     <td className="p-3 text-xs text-slate-600">{c.mobile}</td>
                     <td className="p-3 text-xs">{c.services.map(s => <span key={s} className="rounded bg-blue-50 text-blue-700 px-1.5 py-0.5 mr-1">{s}</span>)}</td>
@@ -111,7 +115,7 @@ export default function ClientsPage() {
                   </tr>
                 ))}
                 {filtered.length === 0 && !loading && (
-                  <tr><td colSpan={7} className="p-6 text-center text-slate-400 italic">{query ? "No clients match your search." : "No clients yet — click \"New Client\" to add one."}</td></tr>
+                  <tr><td colSpan={8} className="p-6 text-center text-slate-400 italic">{query ? "No clients match your search." : "No clients yet — click \"New Client\" to add one."}</td></tr>
                 )}
               </tbody>
             </table>
@@ -148,6 +152,7 @@ function ClientDialog({ editId, existing, onClose, onSaved }: { editId: string |
     engagement_manager: existing?.engagement_manager || "",
     dob_or_incorporation: existing?.dob_or_incorporation || "",
     services: existing?.services || [],
+    aadhaar: "",
   });
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -171,6 +176,11 @@ function ClientDialog({ editId, existing, onClose, onSaved }: { editId: string |
       setError(`Missing required fields: ${missing.join(", ")}`);
       return;
     }
+    const aadhaarDigits = form.aadhaar.replace(/\s+/g, "");
+    if (form.aadhaar && !/^\d{12}$/.test(aadhaarDigits)) {
+      setError("Aadhaar must be 12 digits (e.g. 1234 5678 9012)");
+      return;
+    }
     setSaving(true);
     try {
       if (editId && existing) {
@@ -179,9 +189,10 @@ function ClientDialog({ editId, existing, onClose, onSaved }: { editId: string |
           if (form[k] !== existing[k]) data[k] = form[k];
         });
         if (JSON.stringify(form.services) !== JSON.stringify(existing.services)) data.services = form.services;
+        if (form.aadhaar.trim()) data.aadhaar = aadhaarDigits;
         await ClientsAPI.update(editId, data);
       } else {
-        await ClientsAPI.create(form);
+        await ClientsAPI.create({ ...form, aadhaar: aadhaarDigits || undefined });
       }
       onSaved();
       onClose();
@@ -203,6 +214,7 @@ function ClientDialog({ editId, existing, onClose, onSaved }: { editId: string |
               </div>
               <div><Label>Name *</Label><Input value={form.name} onChange={e => setForm({...form, name: e.target.value})} required /></div>
               <div><Label>PAN *</Label><Input value={form.pan} onChange={e => setForm({...form, pan: e.target.value.toUpperCase()})} placeholder="ABCDE1234F" required /></div>
+              <div><Label>Aadhaar {editId && existing?.has_aadhaar && <span className="text-xs text-slate-400 font-normal">(stored masked: {existing.aadhaar_masked})</span>} {editId && "(blank to keep)"}</Label><Input value={form.aadhaar} onChange={e => setForm({...form, aadhaar: e.target.value})} placeholder="1234 5678 9012 (encrypted at rest)" inputMode="numeric" /></div>
               <div><Label>GSTIN</Label><Input value={form.gstin} onChange={e => setForm({...form, gstin: e.target.value.toUpperCase()})} placeholder="22AAAAA0000A1Z5" /></div>
               <div><Label>TAN</Label><Input value={form.tan} onChange={e => setForm({...form, tan: e.target.value.toUpperCase()})} placeholder="AAAA12345A" /></div>
               <div><Label>CIN / LLPIN</Label><Input value={form.cin} onChange={e => setForm({...form, cin: e.target.value.toUpperCase()})} /></div>

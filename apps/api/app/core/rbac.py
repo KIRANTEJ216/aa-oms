@@ -4,7 +4,7 @@
 
 ROLES = ["Super Admin", "Firm Admin", "Partner", "Manager", "Article Assistant", "Paid Assistant", "Client"]
 
-ENTITIES = ["clients", "tasks", "documents", "invoices", "credentials", "audit", "compliance"]
+ENTITIES = ["clients", "tasks", "documents", "invoices", "credentials", "audit", "compliance", "reports", "bd"]
 
 # Default permission matrix — used until Firestore rolePermissions collection is seeded
 # Derived from PDF p.3 acceptance criteria
@@ -24,6 +24,8 @@ DEFAULT_PERMISSIONS: dict[str, dict[str, list[str]]] = {
         "credentials":   ["view"],
         "audit":         ["view"],
         "compliance":    ["view", "create", "update"],
+        "reports":       ["view"],
+        "bd":            ["view", "create", "update"],
     },
     # Article Assistant: can view/create own resources, update own assignments
     "Article Assistant": {
@@ -34,6 +36,8 @@ DEFAULT_PERMISSIONS: dict[str, dict[str, list[str]]] = {
         "credentials":   [],
         "audit":         [],
         "compliance":    ["view"],
+        "reports":       [],
+        "bd":            [],
     },
     # Paid Assistant: limited view access
     "Paid Assistant": {
@@ -44,6 +48,8 @@ DEFAULT_PERMISSIONS: dict[str, dict[str, list[str]]] = {
         "credentials":   [],
         "audit":         [],
         "compliance":    ["view"],
+        "reports":       [],
+        "bd":            [],
     },
     # Client: can only view own resources
     "Client": {
@@ -54,6 +60,8 @@ DEFAULT_PERMISSIONS: dict[str, dict[str, list[str]]] = {
         "credentials":   [],
         "audit":         [],
         "compliance":    ["view"],
+        "reports":       [],
+        "bd":            [],
     },
 }
 
