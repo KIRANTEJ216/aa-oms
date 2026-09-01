@@ -681,8 +681,6 @@ function DashboardContent() {
             <span className="hidden sm:inline">·</span>
             <span>v1.0.0</span>
             <span className="hidden sm:inline">·</span>
-            <span>by Aniq-ui</span>
-            <span className="hidden sm:inline">·</span>
             <Link href="#" className="hover:text-slate-600 transition-colors">Privacy Policy</Link>
             <span className="hidden sm:inline">·</span>
             <Link href="#" className="hover:text-slate-600 transition-colors">Terms of Service</Link>
