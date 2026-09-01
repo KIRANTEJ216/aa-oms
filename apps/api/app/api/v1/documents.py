@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import uuid
 import base64
 from pydantic import BaseModel, Field
+from app.schemas.common import FirestoreOut
 from app.infra.firestore.client import get_db
 from app.infra.gcs.client import (
     upload_object, download_object, delete_object,
@@ -57,14 +58,14 @@ class DocumentShareCreate(BaseModel):
     mode: str = Field("View Only", description="View Only | Download Enabled")
     expiry_days: int = Field(7, ge=1, le=90)
 
-class FolderResponse(BaseModel):
+class FolderResponse(FirestoreOut):
     id: str
     name: str
     parent_id: Optional[str] = None
     path: str
     client_id: Optional[str] = None
 
-class DocumentResponse(BaseModel):
+class DocumentResponse(FirestoreOut):
     id: str
     tenant_id: str
     client_id: str
@@ -82,14 +83,14 @@ class DocumentResponse(BaseModel):
     created_at: str
     updated_at: Optional[str] = None
 
-class DocumentVersionResponse(BaseModel):
+class DocumentVersionResponse(FirestoreOut):
     version: int
     size: int
     uploaded_by: Optional[str]
     uploaded_at: str
     notes: Optional[str] = None
 
-class DocumentShareResponse(BaseModel):
+class DocumentShareResponse(FirestoreOut):
     id: str
     document_id: str
     mode: str

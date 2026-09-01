@@ -3,7 +3,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 import uuid
 from app.schemas.auth import RegisterRequest
-from app.schemas.common import MessageResponse
+from app.schemas.common import MessageResponse, FirestoreOut
 from app.core.security import hash_password, verify_password
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant, SEED_TENANT_ID
@@ -61,7 +61,7 @@ class ClientUpdate(BaseModel):
     services: Optional[List[str]] = None
     is_portal_enabled: Optional[bool] = None
 
-class ClientResponse(BaseModel):
+class ClientResponse(FirestoreOut):
     id: str
     tenant_id: str
     type: str

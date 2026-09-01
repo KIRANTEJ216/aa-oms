@@ -3,6 +3,7 @@ from typing import List, Optional
 from datetime import datetime, timezone, date
 import uuid
 from pydantic import BaseModel, Field, validator
+from app.schemas.common import FirestoreOut
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant
 from app.core.rbac import require_permission
@@ -57,7 +58,7 @@ class ComplianceFilingCreate(BaseModel):
             raise ValueError('actual_due_date must be ISO format YYYY-MM-DD')
         return v
 
-class ComplianceFilingResponse(BaseModel):
+class ComplianceFilingResponse(FirestoreOut):
     id: str
     tenant_id: str
     client_id: str

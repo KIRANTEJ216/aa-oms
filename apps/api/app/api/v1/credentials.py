@@ -3,6 +3,7 @@ from typing import List, Optional
 from datetime import datetime, timezone
 import uuid
 from pydantic import BaseModel, Field
+from app.schemas.common import FirestoreOut
 from app.infra.firestore.client import get_db
 from app.infra.secrets.client import encrypt_value, decrypt_value, mask_value
 from app.core.tenant import get_current_tenant
@@ -28,7 +29,7 @@ class CredentialUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-class CredentialListResponse(BaseModel):
+class CredentialListResponse(FirestoreOut):
     """List response — never exposes plaintext password."""
     id: str
     tenant_id: str
@@ -45,7 +46,7 @@ class CredentialListResponse(BaseModel):
     access_count: int = 0
 
 
-class CredentialRevealResponse(BaseModel):
+class CredentialRevealResponse(FirestoreOut):
     """Reveal response — exposes plaintext ONCE (audit logged)."""
     id: str
     name: str

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from datetime import datetime
 from typing import List, Optional
 from pydantic import BaseModel
+from app.schemas.common import FirestoreOut
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant
 from app.core.rbac import require_permission
@@ -21,7 +22,7 @@ class AuditEntry(BaseModel):
     statusCode: Optional[int] = None
     createdAt: Optional[str] = None
 
-class AuditListResponse(BaseModel):
+class AuditListResponse(FirestoreOut):
     total: int
     items: List[AuditEntry]
 

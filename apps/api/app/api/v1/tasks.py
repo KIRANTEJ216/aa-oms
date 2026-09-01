@@ -3,6 +3,7 @@ from typing import List, Optional
 from datetime import datetime, timezone, date
 import uuid
 from pydantic import BaseModel, Field, validator
+from app.schemas.common import FirestoreOut
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant
 from app.core.rbac import require_permission
@@ -98,7 +99,7 @@ class TaskStatusUpdate(BaseModel):
             raise ValueError(f"status must be one of {TASK_STATUSES}")
         return v
 
-class TaskResponse(BaseModel):
+class TaskResponse(FirestoreOut):
     id: str
     tenant_id: str
     type: str

@@ -3,6 +3,7 @@ import uuid
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field
+from app.schemas.common import FirestoreOut
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant
 from app.core.rbac import require_permission
@@ -24,7 +25,7 @@ class InvoiceCreate(BaseModel):
     due_days: int = Field(30, ge=1, le=365)  # days until due
     gst_treatment: str = Field("IGST", pattern="^(IGST|CGST_SGST)$")  # auto-detect from client GST state vs firm GST state
 
-class InvoiceResponse(BaseModel):
+class InvoiceResponse(FirestoreOut):
     id: str
     invoice_number: str
     client_id: str
@@ -40,7 +41,7 @@ class PaymentCreate(BaseModel):
     amount: float = Field(..., gt=0)
     payment_method: str = Field("UPI", pattern="^(UPI|Bank Transfer|Cheque|Cash)$")
 
-class PaymentResponse(BaseModel):
+class PaymentResponse(FirestoreOut):
     id: str
     invoice_id: str
     amount: float
