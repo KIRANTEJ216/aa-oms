@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: caoms-compliance-reminders, namespace: caoms }
+spec:
+  schedule: "0 6 * * *" # 6 AM IST daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: reminders
+              image: gcr.io/caoms-dev/caoms-api:latest
+              command: ["python","-m","app.jobs.compliance_reminders"]
+          restartPolicy: OnFailure

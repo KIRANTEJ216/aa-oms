@@ -1,0 +1,16 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: caoms-web, namespace: caoms }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: caoms-web } }
+  template:
+    metadata: { labels: { app: caoms-web } }
+    spec:
+      containers:
+        - name: web
+          image: gcr.io/caoms-dev/caoms-web:latest
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: NEXT_PUBLIC_API_URL, value: https://api.aarav-advisors.caoms.in }
+            - { name: NEXT_PUBLIC_TENANT_MODE, value: single }

@@ -1,0 +1,17 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSameTenant() {
+      return request.auth != null && resource.data.tenant_id == request.auth.token.tenant_id;
+    }
+    match /tenants/{tid} { allow read: if request.auth != null; allow write: if false; }
+    match /users/{uid} { allow read, write: if request.auth != null && resource.data.tenant_id == request.auth.token.tenant_id; allow create: if request.auth == null; }
+    match /clients/{id} { allow read, create, update, delete: if isSameTenant(); }
+    match /tasks/{id} { allow read, create, update, delete: if isSameTenant(); }
+    match /documents/{id} { allow read, create, update, delete: if isSameTenant(); }
+    match /invoices/{id} { allow read, create, update, delete: if isSameTenant(); }
+    match /credentials/{id} { allow read, create, update, delete: if isSameTenant(); }
+    match /auditLogs/{id} { allow create: if request.auth != null; allow read: if request.auth != null; allow update, delete: if false; }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

@@ -1,0 +1,35 @@
+openapi: 3.1.0
+info:
+  title: CAOMS API
+  description: CA Office Management SaaS — Firestore asia-south1 · TENANT_MODE=single (aarav-advisors pilot)
+  version: 0.1.0
+servers:
+  - url: http://localhost:8000
+    description: Local (emulators)
+  - url: https://api.aarav-advisors.caoms.in
+    description: Pilot (single-tenant)
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get: { summary: Health, responses: { "200": { description: ok } } }
+  /ready:
+    get: { summary: Ready (Firestore+Redis checks), responses: { "200": { description: ready } } }
+  /api/v1/auth/register:
+    post: { summary: Register (bcrypt, tenant_id scoped), requestBody: { required: true }, responses: { "201": { description: Created }, "409": { description: Email exists } } }
+  /api/v1/auth/login:
+    post: { summary: Login, responses: { "200": { description: tokens or mfa_required }, "401": { description: Invalid } } }
+  /api/v1/auth/mfa/setup:
+    post: { summary: MFA setup returns otpauth QR, responses: { "200": { description: secret + qr } } }
+  /api/v1/auth/mfa/verify:
+    post: { summary: Verify TOTP, issue tokens, responses: { "200": { description: tokens } } }
+  /api/v1/auth/refresh:
+    post: { summary: Refresh access token, responses: { "200": { description: new access } } }
+  /api/v1/auth/forgot-password:
+    post: { summary: Request reset link (15m), responses: { "200": { description: sent } } }
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  schemas:
+    LoginRequest: { type: object, required: [email, password], properties: { email: { type: string, format: email }, password: { type: string } } }
+    TokenResponse: { type: object, properties: { access_token: { type: string }, refresh_token: { type: string }, token_type: { type: string } } }

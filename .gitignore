@@ -1,0 +1,45 @@
+# deps
+node_modules
+.pnp
+.pnp.js
+.turbo
+# next
+.next
+out
+dist
+build
+# python
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.env
+.env.local
+*.egg-info
+.pytest_cache
+.mypy_cache
+# firestore / gcs emulators
+.firestore
+.storage
+# os
+.DS_Store
+Thumbs.db
+# secrets
+.service-account.json
+*-key.json
+# logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+# coverage
+coverage
+.nyc_output
+
+# scratch / local artifacts (public repo — never commit client docs or screenshots)
+.playwright-mcp/
+/*.png
+/*.docx
+/*.xlsx
+/*.pdf

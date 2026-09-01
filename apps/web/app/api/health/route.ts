@@ -1,0 +1,1 @@
+export async function GET() { return Response.json({ status: "ok", tenant_mode: process.env.NEXT_PUBLIC_TENANT_MODE || "single", app: "caoms-web", time: new Date().toISOString() }); }

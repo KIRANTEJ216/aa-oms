@@ -1,0 +1,15 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: caoms-ingress
+  namespace: caoms
+  annotations:
+    kubernetes.io/ingress.class: gce
+    kubernetes.io/ingress.allow-http: "false"
+spec:
+  tls: [{ hosts: ["aarav-advisors.caoms.in","api.aarav-advisors.caoms.in"], secretName: caoms-tls }]
+  rules:
+    - host: aarav-advisors.caoms.in
+      http: { paths: [{ path: "/*", pathType: ImplementationSpecific, backend: { service: { name: caoms-web, port: { number: 3000 } } } }] }
+    - host: api.aarav-advisors.caoms.in
+      http: { paths: [{ path: "/*", pathType: ImplementationSpecific, backend: { service: { name: caoms-api, port: { number: 8000 } } } }] }
