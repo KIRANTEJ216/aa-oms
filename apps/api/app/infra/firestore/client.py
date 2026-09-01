@@ -1,9 +1,15 @@
 import os
-from functools import lru_cache
 
 # Lazy import so emulator can run without real credentials
 _db = None
 _emulator_warned = False
+
+
+def _is_production() -> bool:
+    vercel = os.getenv("VERCEL", "")
+    env = os.getenv("APP_ENV", os.getenv("ENV", "development")).lower()
+    return bool(vercel) or env in ("production", "prod")
+
 
 def get_db():
     global _db, _emulator_warned
@@ -15,20 +21,27 @@ def get_db():
         from google.cloud import firestore
         if emulator:
             # Emulator: no credentials needed, bypass auth
-            import google.auth.credentials
             # Create anonymous credentials for emulator
-            from unittest.mock import MagicMock
             # Use firestore.Client with emulator host — it ignores credentials
             _db = firestore.Client(project=project)
             # Point to emulator via env var already set
         else:
-            import firebase_admin
-            from firebase_admin import credentials, firestore as fa_firestore
-            if not firebase_admin._apps:
-                # Try default credentials
-                firebase_admin.initialize_app()
-            _db = fa_firestore.client()
+            from firebase_admin import firestore as fa_firestore
+
+            from app.infra.firebase.client import get_firebase_app
+
+            app = get_firebase_app()
+            if app is None:
+                # Production must not silently degrade to an in-memory stub —
+                # two serverless instances would hold different data.
+                raise RuntimeError(
+                    "Firestore not configured: set FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL "
+                    "and FIREBASE_PRIVATE_KEY (or FIRESTORE_EMULATOR_HOST for local dev)"
+                )
+            _db = fa_firestore.client(app=app)
     except Exception as e:
+        if isinstance(e, RuntimeError) and str(e).startswith("Firestore not configured") and _is_production():
+            raise
         # Fallback: in-memory stub for local dev without emulator
         if not _emulator_warned:
             print(f"[firestore] using in-memory stub (emulator not reachable): {e}")
@@ -96,7 +109,8 @@ _PERSIST_PATH = "/tmp/caoms_firestore.json"
 
 def _load_store():
     try:
-        import json as _j, os as _o
+        import json as _j
+        import os as _o
         if _o.path.exists(_PERSIST_PATH):
             raw = _j.load(open(_PERSIST_PATH))
             # raw is dict with "col|doc_id" keys

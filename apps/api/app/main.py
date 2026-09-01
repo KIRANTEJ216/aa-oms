@@ -1,19 +1,21 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
-from app.core.config import get_settings
-from app.core.tenant import tenant_middleware
-from app.core.audit import audit_middleware
-from app.api.v1 import auth as auth_router
-from app.api.v1 import health as health_router
-from app.api.v1 import clients as clients_router
-from app.api.v1 import tasks as tasks_router
-from app.api.v1 import compliance as compliance_router
-from app.api.v1 import documents as documents_router
-from app.api.v1 import credentials as credentials_router
-from app.api.v1 import billing as billing_router
+
 from app.api.v1 import agent as agent_router
 from app.api.v1 import audit as audit_router
+from app.api.v1 import auth as auth_router
+from app.api.v1 import billing as billing_router
+from app.api.v1 import clients as clients_router
+from app.api.v1 import compliance as compliance_router
+from app.api.v1 import credentials as credentials_router
+from app.api.v1 import documents as documents_router
+from app.api.v1 import health as health_router
+from app.api.v1 import tasks as tasks_router
+from app.core.audit import audit_middleware
+from app.core.config import get_settings
+from app.core.tenant import tenant_middleware
+
 
 def create_app() -> FastAPI:
     settings = get_settings()
@@ -25,7 +27,7 @@ def create_app() -> FastAPI:
         redoc_url='/redoc',
         openapi_url='/openapi.json',
     )
-    origins = ['http://localhost:3000', 'http://localhost:3001']
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
     app.middleware('http')(tenant_middleware)
     app.middleware('http')(audit_middleware)
