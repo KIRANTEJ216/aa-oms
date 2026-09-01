@@ -45,3 +45,4 @@ coverage
 /*.docx
 /*.xlsx
 /*.pdf
+.vercel
