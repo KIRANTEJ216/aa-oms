@@ -7,12 +7,15 @@ import { BottomNav } from "@/components/bottom-nav";
 import { getSessionUser } from "@/lib/session";
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const [role, setRole] = useState("Client");
+  const [role, setRole] = useState<string | null>(null);
 
   useEffect(() => {
-    const user = getSessionUser();
-    if (user) setRole(user.role);
+    setRole(getSessionUser()?.role || "Client");
   }, []);
+
+  if (role === null) {
+    return <div className="min-h-screen bg-slate-50" />;
+  }
 
   return (
     <div className="flex min-h-screen bg-slate-50">
