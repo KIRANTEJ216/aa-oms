@@ -10,6 +10,9 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
+class FirebaseLoginRequest(BaseModel):
+    id_token: str
+
 class MfaVerifyRequest(BaseModel):
     temp_token: str
     code: str = Field(min_length=6, max_length=6)

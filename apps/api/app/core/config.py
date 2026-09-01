@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_ttl_min: int = 480
     jwt_refresh_ttl_days: int = 7
+    # Firebase Auth (hybrid: verify Firebase ID tokens, issue custom JWTs)
+    firebase_project_id: str = ""
+    firebase_client_email: str = ""
+    firebase_private_key: str = ""
+    firebase_auto_provision: bool = True  # create a Client account on first Firebase login
     # Redis
     redis_url: str = "redis://localhost:6379/0"
     # CORS

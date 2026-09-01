@@ -8,6 +8,8 @@ node_modules
 out
 dist
 build
+*.tsbuildinfo
+next-env.d.ts
 # python
 __pycache__
 *.pyc

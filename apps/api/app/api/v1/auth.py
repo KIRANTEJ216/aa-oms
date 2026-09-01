@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from datetime import datetime, timezone
 import uuid
-from app.schemas.auth import RegisterRequest, LoginRequest, MfaVerifyRequest, TokenResponse, ForgotPasswordRequest, MfaSetupResponse
+from app.schemas.auth import RegisterRequest, LoginRequest, FirebaseLoginRequest, MfaVerifyRequest, TokenResponse, ForgotPasswordRequest, MfaSetupResponse
 from app.schemas.common import MessageResponse
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, create_temp_token, decode_token, generate_mfa_secret, provisioning_uri, qr_data_uri, verify_totp
 from app.infra.firestore.client import get_db
@@ -82,6 +82,98 @@ async def login(body: LoginRequest):
         pass
     await log_audit(tenant_id=actual_tenant, actor_id=user_id, action="LOGIN", entity="auth", entity_id=user_id)
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+
+@router.post("/firebase")  # Hybrid auth: verify Firebase ID token, issue custom JWTs
+async def firebase_login(body: FirebaseLoginRequest):
+    from app.infra.firebase.client import verify_id_token
+    db = get_db()
+    tenant_id = get_current_tenant()
+    try:
+        fb = verify_id_token(body.id_token)
+    except RuntimeError as e:
+        # Firebase not configured on this deployment
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Firebase token: {e}")
+    email = (fb.get("email") or "").lower()
+    fb_uid = fb.get("uid")
+    if not email and not fb_uid:
+        raise HTTPException(status_code=400, detail="Firebase token has no email")
+    # Match local user by email (tenant-scoped, fall back to global for seed)
+    docs = list(db.collection("users").where("tenant_id", "==", tenant_id).where("email", "==", email).limit(1).stream()) if email else []
+    if not docs and email:
+        docs = list(db.collection("users").where("email", "==", email).limit(1).stream())
+    if docs:
+        user_id = getattr(docs[0], "id", None) or "unknown"
+        data = docs[0].to_dict()
+        if user_id == "unknown":
+            # In-memory stub: scan store for actual doc id
+            try:
+                store = getattr(db, "store", {})
+                for (col, doc_id), v in store.items():
+                    if col == "users" and v.get("email") == email:
+                        user_id = doc_id; data = v; break
+            except Exception:
+                pass
+        if not data.get("isActive", True):
+            raise HTTPException(status_code=403, detail="Account disabled")
+        actual_tenant = data.get("tenant_id", tenant_id)
+        role = data.get("role", "Client")
+    else:
+        # Auto-provision a Client account on first Firebase sign-in
+        from app.core.config import get_settings
+        if not get_settings().firebase_auto_provision:
+            raise HTTPException(status_code=401, detail="No local account matches this Firebase identity")
+        if email:
+            user_id = str(uuid.uuid4())
+            db.collection("users").document(user_id).set({
+                "tenant_id": tenant_id, "name": fb.get("name", email.split("@")[0]), "email": email,
+                "password_hash": "", "role": "Client", "mobile": "",
+                "mfaEnabled": False, "mfaSecretEnc": None, "isActive": True,
+                "firebase_uid": fb_uid, "authProvider": "firebase",
+                "createdAt": datetime.now(timezone.utc), "lastLoginAt": None,
+            })
+            actual_tenant = tenant_id
+            role = "Client"
+            print(f"[firebase-login] auto-provisioned client: {email}")
+        else:
+            raise HTTPException(status_code=401, detail="No local account matches this Firebase identity")
+    access = create_access_token(user_id=user_id, tenant_id=actual_tenant, role=role, email=email)
+    refresh = create_refresh_token(user_id=user_id, tenant_id=actual_tenant)
+    try:
+        db.collection("users").document(user_id).set({"lastLoginAt": datetime.now(timezone.utc)}, merge=True)
+    except Exception:
+        pass
+    await log_audit(tenant_id=actual_tenant, actor_id=user_id, action="LOGIN", entity="auth/firebase", entity_id=user_id)
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+
+@router.post("/firebase/register")  # Hybrid: register a local account from a Firebase identity
+async def firebase_register(body: FirebaseLoginRequest):
+    from app.infra.firebase.client import verify_id_token
+    db = get_db()
+    tenant_id = get_current_tenant()
+    try:
+        fb = verify_id_token(body.id_token)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Invalid Firebase token: {e}")
+    email = (fb.get("email") or "").lower()
+    if not email:
+        raise HTTPException(status_code=400, detail="Firebase token has no email")
+    existing = list(db.collection("users").where("tenant_id", "==", tenant_id).where("email", "==", email).limit(1).stream())
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already exists in this firm")
+    user_id = str(uuid.uuid4())
+    db.collection("users").document(user_id).set({
+        "tenant_id": tenant_id, "name": fb.get("name", email.split("@")[0]), "email": email,
+        "password_hash": "", "role": "Client", "mobile": "",
+        "mfaEnabled": False, "mfaSecretEnc": None, "isActive": True,
+        "firebase_uid": fb.get("uid"), "authProvider": "firebase",
+        "createdAt": datetime.now(timezone.utc), "lastLoginAt": None,
+    })
+    await log_audit(tenant_id=tenant_id, actor_id=user_id, action="CREATE", entity="users", entity_id=user_id)
+    return {"message": "Account created via Firebase. Awaiting approval."}
 
 @router.post("/mfa/setup", response_model=MfaSetupResponse)
 async def mfa_setup():

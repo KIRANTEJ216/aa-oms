@@ -43,6 +43,17 @@
 
 `bcrypt(12)` → `login` checks password → if `mfaEnabled` returns `{mfa_required, temp_token(5m)}` → `POST /auth/mfa/verify {temp_token, code}` verifies `pyotp` → issues `access(8h)+refresh(7d)` httpOnly cookies + Redis denylist. `forgot-password` signed token 15m via audit log + email (n8n).
 
+## Firebase Auth (Hybrid)
+
+Optional Google Firebase Authentication. When configured it runs **alongside** the legacy email/password flow:
+
+1. Frontend signs in via the Firebase JS SDK (`signInWithEmailAndPassword` or Google Popup) and sends the resulting ID token to `POST /api/v1/auth/firebase`.
+2. Backend verifies the token with the Admin SDK (`verify_id_token`) and issues the **same custom JWT** (`access 8h + refresh 7d`) the rest of the app already uses — no changes to the dashboard/sidebar/API layers.
+3. If the Firebase email already maps to a local `users` doc, the existing `role` is preserved. If not and `FIREBASE_AUTO_PROVISION=true`, a `Client`-role account is auto-created (and an explicit `/firebase/register` endpoint creates an account awaiting approval).
+4. Legacy `POST /api/v1/auth/login` remains active as a fallback — login pages prefer Firebase only when `NEXT_PUBLIC_FIREBASE_*` are set, otherwise they fall back to the legacy flow.
+
+Firebase needs **no** rule changes — `firestore.rules` still keys off `request.auth.token.tenant_id`, and the API writes via the Admin SDK (bypasses client rules).
+
 ## Local Dev Env Wiring
 
 Both processes share a single repo-root `.env`:

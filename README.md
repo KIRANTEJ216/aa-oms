@@ -64,6 +64,32 @@ See `.env.example`. Key vars:
 | `JWT_SECRET` | HS256 signing | change-me |
 | `REDIS_URL` | sessions/cache | `redis://localhost:6379/0` |
 | `GCS_BUCKET` | doc storage | `caoms-docs-dev` |
+| `FIREBASE_PROJECT_ID` | Firebase project (hybrid auth) | `aa-oms` |
+| `FIREBASE_CLIENT_EMAIL` | service account email (secret) | — |
+| `FIREBASE_PRIVATE_KEY` | service account private key (secret) | — |
+| `NEXT_PUBLIC_FIREBASE_*` | Firebase web config (frontend) | — |
+
+---
+
+## Firebase Auth (Hybrid)
+
+Login supports both the legacy JWT flow and optional Google Firebase Auth. When the Firebase web config is present the login page tries Firebase first (email/password + a "Continue with Google" button) and falls back to the legacy endpoint otherwise. Backend verifies the Firebase ID token and issues the same custom access/refresh JWTs, so all existing tenant/RBAC/audit layers are unchanged.
+
+### Variables to add
+
+| Where | Variable | Source |
+|---|---|---|
+| **Vercel** (API service) | `FIREBASE_PROJECT_ID` | Firebase console → Project settings → General |
+| | `FIREBASE_CLIENT_EMAIL` | → Service accounts (or `GOOGLE_APPLICATION_CREDENTIALS`) |
+| | `FIREBASE_PRIVATE_KEY` | → Service accounts → Generate new private key (keep newlines as `\n`) |
+| | `JWT_SECRET` | your own strong secret |
+| **Vercel** (Web service) | `NEXT_PUBLIC_FIREBASE_API_KEY` | Firebase console → Project settings → Your apps → Web app config |
+| | `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | e.g. `aa-oms.firebaseapp.com` |
+| | `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | e.g. `aa-oms` |
+| | `NEXT_PUBLIC_FIREBASE_APP_ID` | web app ID |
+| **Firebase console** | Enable Email/Password + Google provider | Authentication → Sign-in method |
+
+`FIREBASE_PRIVATE_KEY` and `JWT_SECRET` are secrets — set them as **Environment Variables** (encrypted), never in code. Set `NEXT_PUBLIC_FIREBASE_*` as **plaintext** build variables (they are public browser constants).
 
 ---
 
