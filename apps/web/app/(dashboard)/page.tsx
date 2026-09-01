@@ -538,29 +538,29 @@ function DashboardContent() {
               <div className="grid grid-cols-2 gap-4 text-xs">
                 <div className="flex justify-between items-center py-2 border-b border-slate-100">
                   <span className="text-slate-600">Product</span>
-                  <span className="font-medium text-slate-800">$0k</span>
+                  <span className="font-medium text-slate-800">₹0k</span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b border-slate-100">
                   <span className="text-slate-600">Subscriptions</span>
-                  <span className="font-medium text-slate-800">$15k</span>
+                  <span className="font-medium text-slate-800">₹15k</span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b border-slate-100">
                   <span className="text-slate-600">Services</span>
-                  <span className="font-medium text-slate-800">$30k</span>
+                  <span className="font-medium text-slate-800">₹30k</span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b border-slate-100">
                   <span className="text-slate-600">Licenses</span>
-                  <span className="font-medium text-slate-800">$45k</span>
+                  <span className="font-medium text-slate-800">₹45k</span>
                 </div>
                 <div className="flex justify-between items-center py-2 border-b border-slate-100">
                   <span className="text-slate-600">Consulting</span>
-                  <span className="font-medium text-slate-800">$103k</span>
+                  <span className="font-medium text-slate-800">₹103k</span>
                 </div>
               </div>
               <div className="mt-3 pt-3 border-t border-slate-200">
                 <div className="flex justify-between text-sm font-medium">
                   <span>Total Revenue</span>
-                  <span className="text-slate-800">$1,93,390</span>
+                  <span className="text-slate-800">₹1,93,390</span>
                 </div>
                 <span className="text-xs text-green-600 font-medium">+13.9% Avg Growth</span>
               </div>
