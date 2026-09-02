@@ -25,6 +25,7 @@ from app.core.tenant import tenant_middleware
 from app.core.rate_limit import limiter, _rate_limit_exceeded_handler
 from app.core.bot_protection import BotDetectionMiddleware
 from app.core.api_keys import HMACVerifier, ReplayProtection
+from app.core.tenant_isolation import TenantIsolationMiddleware
 from slowapi.errors import RateLimitExceeded
 
 
@@ -171,9 +172,11 @@ def create_app() -> FastAPI:
     # 5. Bot detection (logs suspicious requests, doesn't block)
     if settings.bot_protection_enabled:
         app.add_middleware(BotDetectionMiddleware)
-    # 6. Tenant resolution
+    # 6. Tenant isolation (validates tenant boundaries)
+    app.add_middleware(TenantIsolationMiddleware, strict=True)
+    # 7. Tenant resolution
     app.middleware('http')(tenant_middleware)
-    # 7. Audit logging (innermost)
+    # 8. Audit logging (innermost)
     app.middleware('http')(audit_middleware)
     
     try:

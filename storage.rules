@@ -1,8 +1,49 @@
 rules_version = '2';
 service firebase.storage {
   match /b/{bucket}/o {
+    // Tenant-scoped paths: tenants/{tenantId}/...
     match /tenants/{tenantId}/{allPaths=**} {
-      allow read, write: if request.auth != null && request.auth.token.tenant_id == tenantId;
+      // Authenticated users in same tenant can read
+      allow read: if request.auth != null 
+        && request.auth.token.tenant_id == tenantId;
+      
+      // Managers+ can write
+      allow write: if request.auth != null 
+        && request.auth.token.tenant_id == tenantId
+        && request.auth.token.role in ['Super Admin', 'Firm Admin', 'Partner', 'Manager'];
+      
+      // Only admins can delete
+      allow delete: if request.auth != null 
+        && request.auth.token.tenant_id == tenantId
+        && request.auth.token.role in ['Super Admin', 'Firm Admin'];
+    }
+    
+    // Versioned documents: tenants/{tenantId}/documents/{documentId}/versions/{version}
+    match /tenants/{tenantId}/documents/{documentId}/versions/{version} {
+      allow read: if request.auth != null 
+        && request.auth.token.tenant_id == tenantId;
+      allow write: if false; // Only via backend API
+    }
+    
+    // Credentials: restricted to admins
+    match /tenants/{tenantId}/credentials/{allPaths=**} {
+      allow read: if request.auth != null 
+        && request.auth.token.tenant_id == tenantId
+        && request.auth.token.role in ['Super Admin', 'Firm Admin', 'Partner'];
+      allow write: if request.auth != null 
+        && request.auth.token.tenant_id == tenantId
+        && request.auth.token.role in ['Super Admin', 'Firm Admin'];
+    }
+    
+    // Public files (if any) - restricted
+    match /public/{allPaths=**} {
+      allow read: if true;
+      allow write: if false;
+    }
+    
+    // Default deny
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }
