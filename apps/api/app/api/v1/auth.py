@@ -2,17 +2,21 @@ from fastapi import APIRouter, HTTPException, Request, Depends
 from datetime import datetime, timezone
 import uuid
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from app.schemas.auth import RegisterRequest, LoginRequest, FirebaseLoginRequest, MfaVerifyRequest, TokenResponse, ForgotPasswordRequest, MfaSetupResponse
 from app.schemas.common import MessageResponse
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, create_temp_token, decode_token, generate_mfa_secret, provisioning_uri, qr_data_uri, verify_totp
 from app.infra.firestore.client import get_db
+from app.core.auth import get_current_user
 from app.core.tenant import get_current_tenant
 from app.core.audit import log_audit
 from app.core.rate_limit import limiter, RATE_LIMITS
 from app.core.auth_strong import PasswordPolicy, LoginAttemptTracker, SessionManager, PasswordReset
 from app.core.bot_protection import verify_bot_protection, optional_bot_check
 from app.core.api_keys import APIKeyManager, get_api_key, require_api_key_scope
+from app.core.abac import abac_engine, require_abac_permission, Effect, Policy, PolicyRule
+from app.core.passkeys import passkey_manager, PasskeyRegistrationStartRequest, PasskeyRegistrationCompleteRequest, PasskeyAuthenticationStartRequest, PasskeyAuthenticationCompleteRequest, PasskeyRenameRequest
+from app.core.oauth2 import oauth2_manager, OAuth2AuthorizeRequest, OAuth2CallbackRequest, OAuth2LinkRequest
 
 router = APIRouter()
 
@@ -552,3 +556,514 @@ async def validate_api_key(request: Request, body: ValidateAPIKeyRequest):
         "scopes": key_info.get("scopes"),
         "expires_at": key_info.get("expires_at"),
     }
+
+
+# ============================================================
+# ABAC Policy Management (Admin Only)
+# ============================================================
+
+class PolicyCreateRequest(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    combining_algorithm: str = "deny_overrides"
+    target: Dict[str, Any] = {}
+    rules: List[Dict[str, Any]] = []
+
+class PolicyTestRequest(BaseModel):
+    policy: PolicyCreateRequest
+    test_attributes: Dict[str, Any]
+
+@router.get("/abac/policies")
+@limiter.limit("20/minute")
+async def list_abac_policies(request: Request, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """List all ABAC policies."""
+    policies = abac_engine.list_policies()
+    return [
+        {
+            "id": p.id,
+            "name": p.name,
+            "combining_algorithm": p.combining_algorithm,
+            "target": p.target,
+            "rules_count": len(p.rules),
+        }
+        for p in policies
+    ]
+
+@router.get("/abac/policies/{policy_id}")
+@limiter.limit("20/minute")
+async def get_abac_policy(policy_id: str, request: Request, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Get ABAC policy details."""
+    policy = abac_engine.get_policy(policy_id)
+    if not policy:
+        raise HTTPException(404, "Policy not found")
+    return {
+        "id": policy.id,
+        "name": policy.name,
+        "combining_algorithm": policy.combining_algorithm,
+        "target": policy.target,
+        "rules": [
+            {
+                "effect": rule.effect.value,
+                "priority": rule.priority,
+                "condition": rule.condition,
+                "description": rule.description,
+            }
+            for rule in policy.rules
+        ],
+    }
+
+@router.post("/abac/policies", status_code=201)
+@limiter.limit("10/minute")
+async def create_abac_policy(request: Request, body: PolicyCreateRequest, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Create a new ABAC policy."""
+    policy = Policy(
+        id=body.id,
+        name=body.name,
+        combining_algorithm=body.combining_algorithm,
+        target=body.target,
+        rules=[
+            PolicyRule(
+                effect=Effect(r["effect"]),
+                priority=r.get("priority", 0),
+                condition=r["condition"],
+                description=r.get("description", ""),
+            )
+            for r in body.rules
+        ],
+    )
+    abac_engine.add_policy(policy)
+    return {"message": "Policy created", "policy_id": policy.id}
+
+@router.put("/abac/policies/{policy_id}")
+@limiter.limit("10/minute")
+async def update_abac_policy(policy_id: str, request: Request, body: PolicyCreateRequest, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Update an ABAC policy."""
+    if policy_id not in abac_engine.policies:
+        raise HTTPException(404, "Policy not found")
+    policy = Policy(
+        id=body.id,
+        name=body.name,
+        combining_algorithm=body.combining_algorithm,
+        target=body.target,
+        rules=[
+            PolicyRule(
+                effect=Effect(r["effect"]),
+                priority=r.get("priority", 0),
+                condition=r["condition"],
+                description=r.get("description", ""),
+            )
+            for r in body.rules
+        ],
+    )
+    abac_engine.add_policy(policy)
+    return {"message": "Policy updated"}
+
+@router.delete("/abac/policies/{policy_id}")
+@limiter.limit("10/minute")
+async def delete_abac_policy(policy_id: str, request: Request, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Delete an ABAC policy."""
+    if policy_id not in abac_engine.policies:
+        raise HTTPException(404, "Policy not found")
+    abac_engine.remove_policy(policy_id)
+    return {"message": "Policy deleted"}
+
+@router.post("/abac/policies/test")
+@limiter.limit("20/minute")
+async def test_abac_policy(request: Request, body: PolicyTestRequest, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Test a policy against sample attributes."""
+    policy = Policy(
+        id=body.policy.id,
+        name=body.policy.name,
+        combining_algorithm=body.policy.combining_algorithm,
+        target=body.policy.target,
+        rules=[
+            PolicyRule(
+                effect=Effect(r["effect"]),
+                priority=r.get("priority", 0),
+                condition=r["condition"],
+                description=r.get("description", ""),
+            )
+            for r in body.policy.rules
+        ],
+    )
+    result = policy.evaluate(body.test_attributes)
+    return {
+        "result": result.value,
+        "matched_rules": [
+            rule.description for rule in policy.rules
+            if policy._matches_rule(rule, body.test_attributes)
+        ]
+    }
+
+# ABAC Authorization Check (for resource access)
+class AbacCheckRequest(BaseModel):
+    resource_type: str
+    resource_id: str
+    action: str
+
+@router.post("/abac/check")
+@limiter.limit("50/minute")
+async def check_abac_permission(request: Request, body: AbacCheckRequest, user: dict = Depends(get_current_user)):
+    """Check ABAC permission for current user on a resource."""
+    from app.core.abac import ResourceAttributeResolver
+    
+    tenant_id = get_current_tenant()
+    resolver_method = getattr(ResourceAttributeResolver, f"resolve_{body.resource_type}", None)
+    if not resolver_method:
+        raise HTTPException(400, f"No resolver for resource type: {body.resource_type}")
+    
+    resource = await resolver_method(body.resource_id, tenant_id)
+    if not resource:
+        raise HTTPException(404, f"{body.resource_type} not found")
+    
+    subject = {
+        "id": user.get("user_id"),
+        "role": user.get("role"),
+        "email": user.get("email"),
+        "tenant_id": tenant_id,
+    }
+    
+    result = await abac_engine.evaluate(subject, resource, body.action)
+    return {
+        "allowed": result == Effect.ALLOW,
+        "resource_type": body.resource_type,
+        "resource_id": body.resource_id,
+        "action": body.action,
+    }
+
+
+# ============================================================
+# Passkeys (WebAuthn) Endpoints
+# ============================================================
+
+@router.post("/passkeys/register/start")
+@limiter.limit("10/minute")
+async def passkey_register_start(request: Request, body: PasskeyRegistrationStartRequest, user: dict = Depends(get_current_user)):
+    """Start passkey registration."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    username = user.get("email")
+    display_name = body.display_name or user.get("name") or username
+    
+    result = await passkey_manager.start_registration(user_id, username, display_name, tenant_id)
+    return result
+
+@router.post("/passkeys/register/complete")
+@limiter.limit("10/minute")
+async def passkey_register_complete(request: Request, body: PasskeyRegistrationCompleteRequest, user: dict = Depends(get_current_user)):
+    """Complete passkey registration."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    
+    result = await passkey_manager.complete_registration(
+        body.challenge_id,
+        body.credential,
+        user_id,
+        tenant_id,
+        body.device_name
+    )
+    return result
+
+@router.post("/passkeys/authenticate/start")
+@limiter.limit("10/minute")
+async def passkey_authenticate_start(request: Request, body: PasskeyAuthenticationStartRequest):
+    """Start passkey authentication (usernameless)."""
+    tenant_id = get_current_tenant()
+    username = body.username
+    
+    result = await passkey_manager.start_authentication(username, tenant_id)
+    return result
+
+@router.post("/passkeys/authenticate/complete")
+@limiter.limit("10/minute")
+async def passkey_authenticate_complete(request: Request, body: PasskeyAuthenticationCompleteRequest):
+    """Complete passkey authentication."""
+    tenant_id = get_current_tenant()
+    
+    result = await passkey_manager.complete_authentication(
+        body.challenge_id,
+        body.credential,
+        tenant_id
+    )
+    return result
+
+@router.get("/passkeys")
+@limiter.limit("20/minute")
+async def list_passkeys(request: Request, user: dict = Depends(get_current_user)):
+    """List user's passkeys."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    
+    passkeys = await passkey_manager.list_credentials(user_id, tenant_id)
+    return {"passkeys": passkeys}
+
+@router.put("/passkeys/{credential_id}")
+@limiter.limit("10/minute")
+async def rename_passkey(credential_id: str, request: Request, body: PasskeyRenameRequest, user: dict = Depends(get_current_user)):
+    """Rename a passkey."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    
+    await passkey_manager.rename_credential(credential_id, user_id, tenant_id, body.new_name)
+    return {"message": "Passkey renamed"}
+
+@router.delete("/passkeys/{credential_id}")
+@limiter.limit("10/minute")
+async def delete_passkey(credential_id: str, request: Request, user: dict = Depends(get_current_user)):
+    """Delete a passkey."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    
+    success = await passkey_manager.delete_credential(credential_id, user_id, tenant_id)
+    if not success:
+        raise HTTPException(404, "Passkey not found")
+    return {"message": "Passkey deleted"}
+
+
+# ============================================================
+# OAuth2/OIDC Endpoints
+# ============================================================
+
+@router.get("/oauth/providers")
+@limiter.limit("20/minute")
+async def list_oauth_providers(request: Request):
+    """List available OAuth2/OIDC providers."""
+    providers = oauth2_manager.list_providers()
+    return {"providers": providers}
+
+@router.post("/oauth/authorize")
+@limiter.limit("20/minute")
+async def oauth_authorize(request: Request, body: OAuth2AuthorizeRequest):
+    """Generate OAuth2 authorization URL."""
+    from app.core.config import get_settings
+    settings = get_settings()
+    redirect_uri = body.redirect_uri or settings.oauth_redirect_uri
+    
+    # Generate PKCE pair
+    code_verifier, code_challenge = generate_pkce_pair()
+    
+    # Store code_verifier in session/state
+    state = body.state or secrets.token_urlsafe(32)
+    nonce = body.nonce or secrets.token_urlsafe(16)
+    
+    # Store PKCE data
+    db = get_db()
+    db.collection("oauth2States").document(state).set({
+        "provider": body.provider,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+        "code_challenge": code_challenge,
+        "nonce": nonce,
+        "created_at": datetime.now(timezone.utc),
+        "expires_at": datetime.now(timezone.utc) + timedelta(minutes=10),
+    })
+    
+    result = oauth2_manager.get_authorization_url(
+        body.provider,
+        redirect_uri,
+        state=state,
+        nonce=nonce,
+        code_challenge=code_challenge,
+    )
+    result["code_verifier"] = code_verifier  # Return to client for storage
+    return result
+
+@router.post("/oauth/callback")
+@limiter.limit("20/minute")
+async def oauth_callback(request: Request, body: OAuth2CallbackRequest):
+    """Handle OAuth2 callback and exchange code for tokens."""
+    db = get_db()
+    
+    # Retrieve stored state
+    state_doc = db.collection("oauth2States").document(body.state).get()
+    if not state_doc.exists:
+        raise HTTPException(400, "Invalid or expired state")
+    
+    state_data = state_doc.to_dict()
+    if state_data.get("provider") != body.provider:
+        raise HTTPException(400, "Provider mismatch")
+    if state_data.get("redirect_uri") != body.redirect_uri:
+        raise HTTPException(400, "Redirect URI mismatch")
+    
+    # Check expiry
+    expires = state_data.get("expires_at")
+    if isinstance(expires, str):
+        expires = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+    if datetime.now(timezone.utc) > expires:
+        raise HTTPException(400, "State expired")
+    
+    # Verify PKCE
+    code_verifier = body.code_verifier or state_data.get("code_verifier")
+    if code_verifier:
+        # In production, we'd verify the code_challenge was used
+        pass
+    
+    # Exchange code for tokens
+    token_data = await oauth2_manager.exchange_code_for_tokens(
+        body.provider,
+        body.code,
+        body.redirect_uri,
+        code_verifier
+    )
+    
+    # Get user info
+    access_token = token_data.get("access_token")
+    id_token = token_data.get("id_token")
+    
+    userinfo = await oauth2_manager.get_userinfo(body.provider, access_token)
+    
+    # Validate ID token if present
+    if id_token:
+        nonce = state_data.get("nonce")
+        await oauth2_manager.validate_id_token(body.provider, id_token, nonce)
+    
+    # Find or create user
+    tenant_id = get_current_tenant()
+    result = await oauth2_manager.find_or_create_user(
+        body.provider,
+        userinfo,
+        tenant_id,
+        id_token
+    )
+    
+    # Generate app tokens
+    user_id = result["user_id"]
+    user_data = result["user_data"]
+    actual_tenant = user_data.get("tenant_id", tenant_id)
+    role = user_data.get("role", "Client")
+    email = user_data.get("email")
+    
+    from app.core.security import create_access_token, create_refresh_token
+    access = create_access_token(user_id=user_id, tenant_id=actual_tenant, role=role, email=email)
+    refresh = create_refresh_token(user_id=user_id, tenant_id=actual_tenant)
+    
+    # Create session
+    session_id = await SessionManager.create_session(
+        user_id=user_id,
+        tenant_id=actual_tenant,
+        device_info={"type": "oauth", "provider": body.provider},
+        ip=request.client.host if request.client else "",
+        user_agent=request.headers.get("user-agent", "")
+    )
+    
+    # Clean up state
+    db.collection("oauth2States").document(body.state).delete()
+    
+    return {
+        "access_token": access,
+        "refresh_token": refresh,
+        "token_type": "bearer",
+        "session_id": session_id,
+        "user": {
+            "id": user_id,
+            "email": email,
+            "name": user_data.get("name"),
+            "role": role,
+            "provider": body.provider,
+            "new_user": result.get("new_user", False),
+        }
+    }
+
+@router.post("/oauth/link")
+@limiter.limit("10/minute")
+async def oauth_link_account(request: Request, body: OAuth2LinkRequest, user: dict = Depends(get_current_user)):
+    """Link an OAuth2 provider to current account."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    
+    # Get userinfo from provider
+    userinfo = await oauth2_manager.get_userinfo(body.provider, body.access_token)
+    provider = oauth2_manager.get_provider(body.provider)
+    
+    provider_user_id = userinfo.get(provider.user_id_field)
+    email = userinfo.get(provider.email_field, "").lower()
+    
+    if not provider_user_id:
+        raise HTTPException(400, "Provider user ID not found")
+    
+    # Check if already linked
+    db = get_db()
+    existing = list(db.collection("userIdentities")
+                   .where("provider_id", "==", body.provider)
+                   .where("provider_user_id", "==", provider_user_id)
+                   .limit(1)
+                   .stream())
+    if existing:
+        raise HTTPException(409, "This provider account is already linked")
+    
+    # Create identity link
+    identity_id = secrets.token_urlsafe(16)
+    db.collection("userIdentities").document(identity_id).set({
+        "user_id": user_id,
+        "tenant_id": tenant_id,
+        "provider_id": body.provider,
+        "provider_user_id": provider_user_id,
+        "email": email,
+        "created_at": datetime.now(timezone.utc),
+        "last_used_at": datetime.now(timezone.utc),
+    })
+    
+    await log_audit(
+        tenant_id=tenant_id,
+        actor_id=user_id,
+        action="OAUTH_LINK",
+        entity="userIdentities",
+        entity_id=identity_id,
+        diff={"provider": body.provider}
+    )
+    
+    return {"message": "Account linked successfully"}
+
+@router.get("/oauth/linked")
+@limiter.limit("20/minute")
+async def list_linked_accounts(request: Request, user: dict = Depends(get_current_user)):
+    """List linked OAuth2 accounts."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    
+    db = get_db()
+    links = list(db.collection("userIdentities")
+                .where("user_id", "==", user_id)
+                .where("tenant_id", "==", tenant_id)
+                .stream())
+    
+    return {
+        "linked_accounts": [
+            {
+                "provider": link.to_dict().get("provider_id"),
+                "email": link.to_dict().get("email"),
+                "linked_at": link.to_dict().get("created_at"),
+            }
+            for link in links
+        ]
+    }
+
+@router.delete("/oauth/linked/{provider}")
+@limiter.limit("10/minute")
+async def unlink_account(provider: str, request: Request, user: dict = Depends(get_current_user)):
+    """Unlink an OAuth2 provider."""
+    tenant_id = get_current_tenant()
+    user_id = user.get("user_id")
+    
+    db = get_db()
+    links = list(db.collection("userIdentities")
+                .where("user_id", "==", user_id)
+                .where("tenant_id", "==", tenant_id)
+                .where("provider_id", "==", provider)
+                .limit(1)
+                .stream())
+    
+    for link in links:
+        link.reference.delete()
+        await log_audit(
+            tenant_id=tenant_id,
+            actor_id=user_id,
+            action="OAUTH_UNLINK",
+            entity="userIdentities",
+            entity_id=link.id,
+            diff={"provider": provider}
+        )
+        return {"message": "Account unlinked"}
+    
+    raise HTTPException(404, "Linked account not found")

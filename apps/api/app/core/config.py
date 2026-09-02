@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 from pathlib import Path
+from typing import Dict, Any
 
 # Monorepo: .env may live at the repo root (aa-oms/.env) or in apps/api/.env
 _ENV_FILES = (str(Path(__file__).resolve().parents[4] / ".env"), ".env")
@@ -77,6 +78,20 @@ class Settings(BaseSettings):
     # Security - Payload/Timeout
     max_payload_size_mb: int = 10
     request_timeout_seconds: int = 30
+    # Security - WebAuthn (Passkeys)
+    webauthn_rp_id: str = "localhost"
+    webauthn_rp_name: str = "CAOMS"
+    webauthn_origin: str = "http://localhost:3000"
+    # Security - OAuth2/OIDC
+    oauth_google_client_id: str = ""
+    oauth_google_client_secret: str = ""
+    oauth_microsoft_client_id: str = ""
+    oauth_microsoft_client_secret: str = ""
+    oauth_github_client_id: str = ""
+    oauth_github_client_secret: str = ""
+    oauth_custom_providers: Dict[str, Any] = {}
+    oauth_auto_provision: bool = True
+    oauth_redirect_uri: str = "http://localhost:3000/auth/callback"
 
     model_config = SettingsConfigDict(env_file=_ENV_FILES, extra="ignore")
 
