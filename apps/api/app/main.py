@@ -21,6 +21,7 @@ from app.core.audit import audit_middleware
 from app.core.config import get_settings
 from app.core.tenant import tenant_middleware
 from app.core.rate_limit import limiter, _rate_limit_exceeded_handler
+from app.core.bot_protection import BotDetectionMiddleware
 from slowapi.errors import RateLimitExceeded
 
 
@@ -81,9 +82,12 @@ def create_app() -> FastAPI:
     if settings.rate_limit_enabled:
         app.state.limiter = limiter
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    # 4. Tenant resolution
+    # 4. Bot detection (logs suspicious requests, doesn't block)
+    if settings.bot_protection_enabled:
+        app.add_middleware(BotDetectionMiddleware)
+    # 5. Tenant resolution
     app.middleware('http')(tenant_middleware)
-    # 5. Audit logging (innermost)
+    # 6. Audit logging (innermost)
     app.middleware('http')(audit_middleware)
     
     try:

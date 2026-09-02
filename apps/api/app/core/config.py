@@ -64,7 +64,9 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     # Security - Bot Protection
     turnstile_secret: str = ""
+    turnstile_site_key: str = ""
     recaptcha_secret: str = ""
+    recaptcha_site_key: str = ""
     bot_protection_enabled: bool = True
     # Security - API Keys
     api_key_prefix: str = "caoms_"

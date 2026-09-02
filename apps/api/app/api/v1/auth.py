@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from datetime import datetime, timezone
 import uuid
 from pydantic import BaseModel
@@ -10,12 +10,13 @@ from app.core.tenant import get_current_tenant
 from app.core.audit import log_audit
 from app.core.rate_limit import limiter, RATE_LIMITS
 from app.core.auth_strong import PasswordPolicy, LoginAttemptTracker, SessionManager, PasswordReset
+from app.core.bot_protection import verify_bot_protection, optional_bot_check
 
 router = APIRouter()
 
 @router.post("/register", response_model=MessageResponse, status_code=201)
 @limiter.limit(RATE_LIMITS["auth_register"])
-async def register(request: Request, body: RegisterRequest):
+async def register(request: Request, body: RegisterRequest, bot_result: dict = Depends(verify_bot_protection)):
     # Validate password policy
     errors = PasswordPolicy.validate(body.password)
     if errors:
@@ -54,7 +55,7 @@ async def register(request: Request, body: RegisterRequest):
 
 @router.post("/login")
 @limiter.limit(RATE_LIMITS["auth_login"])
-async def login(request: Request, body: LoginRequest):
+async def login(request: Request, body: LoginRequest, bot_result: dict = Depends(verify_bot_protection)):
     # Get client IP for login tracking
     client_ip = request.client.host if request.client else "unknown"
     user_agent = request.headers.get("user-agent", "")
@@ -134,7 +135,7 @@ async def login(request: Request, body: LoginRequest):
 
 @router.post("/firebase")  # Hybrid auth: verify Firebase ID token, issue custom JWTs
 @limiter.limit(RATE_LIMITS["auth_firebase"])
-async def firebase_login(request: Request, body: FirebaseLoginRequest):
+async def firebase_login(request: Request, body: FirebaseLoginRequest, bot_result: dict = Depends(verify_bot_protection)):
     from app.infra.firebase.client import verify_id_token
     db = get_db()
     tenant_id = get_current_tenant()
@@ -199,7 +200,7 @@ async def firebase_login(request: Request, body: FirebaseLoginRequest):
 
 @router.post("/firebase/register")  # Hybrid: register a local account from a Firebase identity
 @limiter.limit(RATE_LIMITS["auth_register"])
-async def firebase_register(request: Request, body: FirebaseLoginRequest):
+async def firebase_register(request: Request, body: FirebaseLoginRequest, bot_result: dict = Depends(verify_bot_protection)):
     from app.infra.firebase.client import verify_id_token
     db = get_db()
     tenant_id = get_current_tenant()
@@ -302,7 +303,7 @@ async def refresh(request: Request, body: dict):
 
 @router.post("/forgot-password", response_model=MessageResponse)
 @limiter.limit(RATE_LIMITS["auth_forgot"])
-async def forgot_password(request: Request, body: ForgotPasswordRequest):
+async def forgot_password(request: Request, body: ForgotPasswordRequest, bot_result: dict = Depends(verify_bot_protection)):
     client_ip = request.client.host if request.client else "unknown"
     tenant_id = get_current_tenant()
     return await PasswordReset.request_reset(body.email, tenant_id, client_ip, request.headers.get("user-agent", ""))
@@ -313,7 +314,7 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 @router.post("/reset-password", response_model=MessageResponse)
-async def reset_password(body: ResetPasswordRequest, request: Request):
+async def reset_password(body: ResetPasswordRequest, request: Request, bot_result: dict = Depends(verify_bot_protection)):
     client_ip = request.client.host if request.client else "unknown"
     # Find user by token - we need to check all users (or store token with user_id)
     # For now, require user_id in request or store token->user mapping
@@ -323,7 +324,7 @@ async def reset_password(body: ResetPasswordRequest, request: Request):
     raise HTTPException(status_code=501, detail="Use /reset-password/{user_id} with token in body")
 
 @router.post("/reset-password/{user_id}", response_model=MessageResponse)
-async def reset_password_with_user(user_id: str, body: ResetPasswordRequest, request: Request):
+async def reset_password_with_user(user_id: str, body: ResetPasswordRequest, request: Request, bot_result: dict = Depends(verify_bot_protection)):
     client_ip = request.client.host if request.client else "unknown"
     tenant_id = get_current_tenant()
     
@@ -346,13 +347,13 @@ class VerifyEmailRequest(BaseModel):
     token: str
 
 @router.post("/verify-email", response_model=MessageResponse)
-async def verify_email(body: VerifyEmailRequest, request: Request):
+async def verify_email(body: VerifyEmailRequest, request: Request, bot_result: dict = Depends(verify_bot_protection)):
     # For anonymous verification, we need to find user by token
     # In production, store token->user_id mapping
     raise HTTPException(status_code=501, detail="Use /verify-email/{user_id} with token in body")
 
 @router.post("/verify-email/{user_id}", response_model=MessageResponse)
-async def verify_email_with_user(user_id: str, body: VerifyEmailRequest, request: Request):
+async def verify_email_with_user(user_id: str, body: VerifyEmailRequest, request: Request, bot_result: dict = Depends(verify_bot_protection)):
     tenant_id = get_current_tenant()
     
     db = get_db()
@@ -371,7 +372,7 @@ async def verify_email_with_user(user_id: str, body: VerifyEmailRequest, request
 
 @router.post("/resend-verification", response_model=MessageResponse)
 @limiter.limit(RATE_LIMITS["auth_forgot"])
-async def resend_verification(request: Request, body: ForgotPasswordRequest):
+async def resend_verification(request: Request, body: ForgotPasswordRequest, bot_result: dict = Depends(verify_bot_protection)):
     """Resend verification email (reuses forgot-password rate limit)."""
     tenant_id = get_current_tenant()
     
