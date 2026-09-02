@@ -7,6 +7,7 @@ from app.schemas.common import FirestoreOut
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant
 from app.core.rbac import require_permission
+from app.core.rate_limit import limiter, RATE_LIMITS
 
 router = APIRouter()
 
@@ -292,6 +293,7 @@ async def delete_support_ticket(
 
 
 @router.post("/chatbot", response_model=ChatbotResponse)
+@limiter.limit(RATE_LIMITS["support_chatbot"])
 async def chatbot_interaction(
     message: ChatbotMessage,
     request: Request,

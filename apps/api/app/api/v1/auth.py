@@ -1,17 +1,26 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from datetime import datetime, timezone
 import uuid
+from pydantic import BaseModel
 from app.schemas.auth import RegisterRequest, LoginRequest, FirebaseLoginRequest, MfaVerifyRequest, TokenResponse, ForgotPasswordRequest, MfaSetupResponse
 from app.schemas.common import MessageResponse
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, create_temp_token, decode_token, generate_mfa_secret, provisioning_uri, qr_data_uri, verify_totp
 from app.infra.firestore.client import get_db
 from app.core.tenant import get_current_tenant
 from app.core.audit import log_audit
+from app.core.rate_limit import limiter, RATE_LIMITS
+from app.core.auth_strong import PasswordPolicy, LoginAttemptTracker, SessionManager, PasswordReset
 
 router = APIRouter()
 
 @router.post("/register", response_model=MessageResponse, status_code=201)
-async def register(body: RegisterRequest):
+@limiter.limit(RATE_LIMITS["auth_register"])
+async def register(request: Request, body: RegisterRequest):
+    # Validate password policy
+    errors = PasswordPolicy.validate(body.password)
+    if errors:
+        raise HTTPException(status_code=400, detail={"errors": errors})
+    
     db = get_db()
     tenant_id = get_current_tenant()
     # Check duplicate email within tenant
@@ -29,14 +38,32 @@ async def register(body: RegisterRequest):
         "mfaEnabled": False,
         "mfaSecretEnc": None,
         "isActive": True,
+        "emailVerified": False,
         "createdAt": datetime.now(timezone.utc),
         "lastLoginAt": None,
     })
     await log_audit(tenant_id=tenant_id, actor_id=user_id, action="CREATE", entity="users", entity_id=user_id)
-    return {"message": "Account created. Awaiting approval."}
+    
+    # Send email verification if required
+    from app.core.config import get_settings
+    if get_settings().email_verification_required:
+        from app.core.auth_strong import EmailVerification
+        await EmailVerification.send_verification(user_id, body.email.lower(), tenant_id)
+    
+    return {"message": "Account created. Please verify your email address."}
 
 @router.post("/login")
-async def login(body: LoginRequest):
+@limiter.limit(RATE_LIMITS["auth_login"])
+async def login(request: Request, body: LoginRequest):
+    # Get client IP for login tracking
+    client_ip = request.client.host if request.client else "unknown"
+    user_agent = request.headers.get("user-agent", "")
+    
+    # Check for account lockout
+    locked, lockout_msg = await LoginAttemptTracker.is_locked(client_ip, body.email)
+    if locked:
+        raise HTTPException(status_code=429, detail=lockout_msg)
+    
     db = get_db()
     tenant_id = get_current_tenant()
     # Find user by email within tenant
@@ -45,12 +72,13 @@ async def login(body: LoginRequest):
         # Fallback: global search (for seed without tenant filter in stub)
         docs = list(db.collection("users").where("email", "==", body.email.lower()).limit(1).stream())
     if not docs:
+        # Record failed attempt (prevent user enumeration by always checking)
+        await LoginAttemptTracker.record_failure(client_ip, body.email)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     data = docs[0].to_dict()
     # The stub stores docs without id; try to get id from doc
     user_id = getattr(docs[0], "id", None) or data.get("user_id") or "unknown"
     # In-memory stub: need to find actual doc id via store scan
-    # Try to find id by scanning
     if user_id == "unknown":
         try:
             # brute force: find in store
@@ -63,16 +91,37 @@ async def login(body: LoginRequest):
         except Exception:
             pass
     if not verify_password(body.password, data.get("password_hash","")):
+        await LoginAttemptTracker.record_failure(client_ip, body.email)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not data.get("isActive", True):
         raise HTTPException(status_code=403, detail="Account disabled")
+    
+    # Check email verification
+    from app.core.config import get_settings
+    if get_settings().email_verification_required and not data.get("emailVerified", False):
+        raise HTTPException(status_code=403, detail="Email not verified. Please check your inbox.")
+    
     actual_tenant = data.get("tenant_id", tenant_id)
     # MFA check
     if data.get("mfaEnabled") and data.get("mfaSecretEnc"):
         from app.infra.secrets.client import decrypt_value
         # mfaSecretEnc is base64 stub; decrypt
         temp = create_temp_token(user_id=user_id, tenant_id=actual_tenant)
+        await LoginAttemptTracker.clear(client_ip, body.email)
         return {"mfa_required": True, "temp_token": temp}
+    
+    # Clear failed attempts on successful password
+    await LoginAttemptTracker.clear(client_ip, body.email)
+    
+    # Create session
+    session_id = await SessionManager.create_session(
+        user_id=user_id,
+        tenant_id=actual_tenant,
+        device_info={},  # Could parse from user_agent
+        ip=client_ip,
+        user_agent=user_agent
+    )
+    
     access = create_access_token(user_id=user_id, tenant_id=actual_tenant, role=data.get("role","Client"), email=data.get("email"))
     refresh = create_refresh_token(user_id=user_id, tenant_id=actual_tenant)
     # Update lastLogin
@@ -80,11 +129,12 @@ async def login(body: LoginRequest):
         db.collection("users").document(user_id).set({"lastLoginAt": datetime.now(timezone.utc)}, merge=True)
     except Exception:
         pass
-    await log_audit(tenant_id=actual_tenant, actor_id=user_id, action="LOGIN", entity="auth", entity_id=user_id)
-    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+    await log_audit(tenant_id=actual_tenant, actor_id=user_id, action="LOGIN", entity="auth", entity_id=user_id, ip=client_ip)
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer", "session_id": session_id}
 
 @router.post("/firebase")  # Hybrid auth: verify Firebase ID token, issue custom JWTs
-async def firebase_login(body: FirebaseLoginRequest):
+@limiter.limit(RATE_LIMITS["auth_firebase"])
+async def firebase_login(request: Request, body: FirebaseLoginRequest):
     from app.infra.firebase.client import verify_id_token
     db = get_db()
     tenant_id = get_current_tenant()
@@ -148,7 +198,8 @@ async def firebase_login(body: FirebaseLoginRequest):
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
 
 @router.post("/firebase/register")  # Hybrid: register a local account from a Firebase identity
-async def firebase_register(body: FirebaseLoginRequest):
+@limiter.limit(RATE_LIMITS["auth_register"])
+async def firebase_register(request: Request, body: FirebaseLoginRequest):
     from app.infra.firebase.client import verify_id_token
     db = get_db()
     tenant_id = get_current_tenant()
@@ -176,7 +227,8 @@ async def firebase_register(body: FirebaseLoginRequest):
     return {"message": "Account created via Firebase. Awaiting approval."}
 
 @router.post("/mfa/setup", response_model=MfaSetupResponse)
-async def mfa_setup():
+@limiter.limit(RATE_LIMITS["auth_mfa"])
+async def mfa_setup(request: Request):
     from app.core.auth import get_current_user
     from fastapi import Depends
     # This is a placeholder — proper impl requires auth dependency injection at router level
@@ -187,7 +239,8 @@ async def mfa_setup():
     return {"secret": secret, "provisioning_uri": provisioning_uri(secret, "user@caoms.in"), "qr_data_uri": qr_data_uri(provisioning_uri(secret, "user@caoms.in"))}
 
 @router.post("/mfa/verify")
-async def mfa_verify(body: MfaVerifyRequest):
+@limiter.limit(RATE_LIMITS["auth_mfa"])
+async def mfa_verify(request: Request, body: MfaVerifyRequest):
     try:
         payload = decode_token(body.temp_token)
     except Exception as e:
@@ -221,7 +274,8 @@ async def mfa_verify(body: MfaVerifyRequest):
     return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
 
 @router.post("/refresh")
-async def refresh(body: dict):
+@limiter.limit(RATE_LIMITS["auth_refresh"])
+async def refresh(request: Request, body: dict):
     token = body.get("refresh_token")
     if not token:
         raise HTTPException(status_code=400, detail="refresh_token required")
@@ -247,9 +301,129 @@ async def refresh(body: dict):
     return {"access_token": access, "token_type": "bearer"}
 
 @router.post("/forgot-password", response_model=MessageResponse)
-async def forgot_password(body: ForgotPasswordRequest):
-    # Always return success to avoid email enumeration
-    # In prod: generate signed token, send email via n8n/SendGrid
+@limiter.limit(RATE_LIMITS["auth_forgot"])
+async def forgot_password(request: Request, body: ForgotPasswordRequest):
+    client_ip = request.client.host if request.client else "unknown"
     tenant_id = get_current_tenant()
-    await log_audit(tenant_id=tenant_id, actor_id=None, action="AUTH", entity="auth/forgot-password", diff={"email": body.email})
-    return {"message": "If the account exists, a reset link has been sent (15 min expiry)."}
+    return await PasswordReset.request_reset(body.email, tenant_id, client_ip, request.headers.get("user-agent", ""))
+
+# Password Reset Verification
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
+@router.post("/reset-password", response_model=MessageResponse)
+async def reset_password(body: ResetPasswordRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    # Find user by token - we need to check all users (or store token with user_id)
+    # For now, require user_id in request or store token->user mapping
+    # This is a simplified version
+    db = get_db()
+    # In production, you'd have a token->user_id mapping
+    raise HTTPException(status_code=501, detail="Use /reset-password/{user_id} with token in body")
+
+@router.post("/reset-password/{user_id}", response_model=MessageResponse)
+async def reset_password_with_user(user_id: str, body: ResetPasswordRequest, request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    tenant_id = get_current_tenant()
+    
+    # Verify tenant
+    db = get_db()
+    doc = db.collection("users").document(user_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+    if doc.to_dict().get("tenant_id") != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+    
+    success = await PasswordReset.reset_password(user_id, body.token, body.new_password, client_ip)
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token")
+    
+    return {"message": "Password has been reset. Please log in with your new password."}
+
+# Email Verification
+class VerifyEmailRequest(BaseModel):
+    token: str
+
+@router.post("/verify-email", response_model=MessageResponse)
+async def verify_email(body: VerifyEmailRequest, request: Request):
+    # For anonymous verification, we need to find user by token
+    # In production, store token->user_id mapping
+    raise HTTPException(status_code=501, detail="Use /verify-email/{user_id} with token in body")
+
+@router.post("/verify-email/{user_id}", response_model=MessageResponse)
+async def verify_email_with_user(user_id: str, body: VerifyEmailRequest, request: Request):
+    tenant_id = get_current_tenant()
+    
+    db = get_db()
+    doc = db.collection("users").document(user_id).get()
+    if not doc.exists:
+        raise HTTPException(status_code=404, detail="User not found")
+    if doc.to_dict().get("tenant_id") != tenant_id:
+        raise HTTPException(status_code=403, detail="Tenant mismatch")
+    
+    from app.core.auth_strong import EmailVerification
+    success = await EmailVerification.verify(user_id, body.token)
+    if not success:
+        raise HTTPException(status_code=400, detail="Invalid or expired verification token")
+    
+    return {"message": "Email verified successfully. You can now log in."}
+
+@router.post("/resend-verification", response_model=MessageResponse)
+@limiter.limit(RATE_LIMITS["auth_forgot"])
+async def resend_verification(request: Request, body: ForgotPasswordRequest):
+    """Resend verification email (reuses forgot-password rate limit)."""
+    tenant_id = get_current_tenant()
+    
+    db = get_db()
+    docs = list(db.collection("users").where("tenant_id", "==", tenant_id).where("email", "==", body.email.lower()).limit(1).stream())
+    if not docs:
+        return {"message": "If the account exists, a verification email has been sent."}
+    
+    user_id = docs[0].id
+    from app.core.auth_strong import EmailVerification
+    await EmailVerification.send_verification(user_id, body.email.lower(), tenant_id)
+    return {"message": "If the account exists, a verification email has been sent."}
+
+# Session Management
+@router.get("/sessions")
+async def list_sessions(request: Request):
+    """List current user's active sessions."""
+    from app.core.auth import get_current_user
+    from fastapi import Depends
+    
+    # This needs proper auth dependency - simplified for now
+    # In production, use Depends(get_current_user)
+    raise HTTPException(status_code=501, detail="Requires authenticated user context")
+
+@router.delete("/sessions/{session_id}")
+async def revoke_session(session_id: str, request: Request):
+    """Revoke a specific session."""
+    from app.core.auth import get_current_user
+    from fastapi import Depends
+    from app.core.auth_strong import SessionManager
+    
+    raise HTTPException(status_code=501, detail="Requires authenticated user context")
+
+@router.delete("/sessions")
+async def revoke_all_sessions(request: Request):
+    """Revoke all sessions except current."""
+    from app.core.auth import get_current_user
+    from fastapi import Depends
+    from app.core.auth_strong import SessionManager
+    
+    raise HTTPException(status_code=501, detail="Requires authenticated user context")
+
+# Password Change (authenticated)
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+@router.post("/change-password", response_model=MessageResponse)
+async def change_password(request: Request, body: ChangePasswordRequest):
+    """Change password for authenticated user."""
+    from app.core.auth import get_current_user
+    from fastapi import Depends
+    from app.core.auth_strong import change_password as change_pwd
+    
+    raise HTTPException(status_code=501, detail="Requires authenticated user context")

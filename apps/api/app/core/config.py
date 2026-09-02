@@ -32,13 +32,49 @@ class Settings(BaseSettings):
     firebase_auto_provision: bool = True  # create a Client account on first Firebase login
     # Redis
     redis_url: str = "redis://localhost:6379/0"
+    rate_limit_redis_url: str = "redis://localhost:6379/1"
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:3001"
     # n8n Webhook
     n8n_webhook_url: str = ""
-    # Security
+    # Security - Auth Hardening
     bcrypt_rounds: int = 12
+    password_min_length: int = 12
+    password_require_upper: bool = True
+    password_require_lower: bool = True
+    password_require_digit: bool = True
+    password_require_special: bool = True
+    password_max_age_days: int = 90
+    password_history_count: int = 5
+    # Security - Login Protection
+    login_max_attempts: int = 5
+    login_lockout_duration_min: int = 15
+    login_attempt_window_min: int = 15
+    # Security - Session Management
+    session_max_per_user: int = 5
+    session_absolute_timeout_hours: int = 24
+    session_idle_timeout_hours: int = 8
+    # Security - Email Verification
+    email_verification_required: bool = True
+    verify_token_ttl_hours: int = 24
+    # Security - Password Reset
+    reset_token_ttl_min: int = 15
+    # Security - Rate Limiting
     rate_limit_per_min: int = 100
+    rate_limit_enabled: bool = True
+    # Security - Bot Protection
+    turnstile_secret: str = ""
+    recaptcha_secret: str = ""
+    bot_protection_enabled: bool = True
+    # Security - API Keys
+    api_key_prefix: str = "caoms_"
+    api_key_default_expires_days: int = 365
+    # Security - HMAC
+    hmac_signature_required_paths: str = "/api/v1/webhooks/"
+    hmac_max_timestamp_drift_seconds: int = 300
+    # Security - Payload/Timeout
+    max_payload_size_mb: int = 10
+    request_timeout_seconds: int = 30
 
     model_config = SettingsConfigDict(env_file=_ENV_FILES, extra="ignore")
 

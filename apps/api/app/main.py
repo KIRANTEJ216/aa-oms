@@ -1,6 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.api.v1 import agent as agent_router
 from app.api.v1 import audit as audit_router
@@ -18,6 +20,41 @@ from app.api.v1 import tasks as tasks_router
 from app.core.audit import audit_middleware
 from app.core.config import get_settings
 from app.core.tenant import tenant_middleware
+from app.core.rate_limit import limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+
+class PayloadSizeLimitMiddleware(BaseHTTPMiddleware):
+    """Limit request payload size."""
+    def __init__(self, app, max_size_mb: int = 10):
+        super().__init__(app)
+        self.max_size = max_size_mb * 1024 * 1024
+    
+    async def dispatch(self, request: Request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > self.max_size:
+            return JSONResponse(
+                status_code=413,
+                content={"detail": f"Payload too large. Maximum size is {self.max_size // (1024*1024)}MB."}
+            )
+        return await call_next(request)
+
+
+class RequestTimeoutMiddleware(BaseHTTPMiddleware):
+    """Add request timeout."""
+    def __init__(self, app, timeout_seconds: int = 30):
+        super().__init__(app)
+        self.timeout = timeout_seconds
+    
+    async def dispatch(self, request: Request, call_next):
+        import asyncio
+        try:
+            return await asyncio.wait_for(call_next(request), timeout=self.timeout)
+        except asyncio.TimeoutError:
+            return JSONResponse(
+                status_code=504,
+                content={"detail": f"Request timeout after {self.timeout} seconds"}
+            )
 
 
 def create_app() -> FastAPI:
@@ -30,14 +67,30 @@ def create_app() -> FastAPI:
         redoc_url='/redoc',
         openapi_url='/openapi.json',
     )
+    
+    # CORS
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
+    
+    # Security Middleware (order matters - outermost first)
+    # 1. Payload size limit
+    app.add_middleware(PayloadSizeLimitMiddleware, max_size_mb=settings.max_payload_size_mb)
+    # 2. Request timeout
+    app.add_middleware(RequestTimeoutMiddleware, timeout_seconds=settings.request_timeout_seconds)
+    # 3. Rate limiting
+    if settings.rate_limit_enabled:
+        app.state.limiter = limiter
+        app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    # 4. Tenant resolution
     app.middleware('http')(tenant_middleware)
+    # 5. Audit logging (innermost)
     app.middleware('http')(audit_middleware)
+    
     try:
         Instrumentator().instrument(app).expose(app, endpoint='/metrics')
     except Exception:
         pass
+    
     app.include_router(auth_router.router, prefix='/api/v1/auth', tags=['auth'])
     app.include_router(health_router.router, tags=['health'])
     app.include_router(clients_router.router, prefix='/api/v1/clients', tags=['clients'])
@@ -57,5 +110,6 @@ def create_app() -> FastAPI:
         return {'name': 'CAOMS API', 'version': '0.2.0', 'tenant_mode': settings.tenant_mode, 'docs': '/docs', 'health': '/health'}
 
     return app
+
 
 app = create_app()
