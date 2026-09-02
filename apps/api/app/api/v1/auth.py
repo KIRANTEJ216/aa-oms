@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request, Depends
 from datetime import datetime, timezone
 import uuid
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import List, Optional
 from app.schemas.auth import RegisterRequest, LoginRequest, FirebaseLoginRequest, MfaVerifyRequest, TokenResponse, ForgotPasswordRequest, MfaSetupResponse
 from app.schemas.common import MessageResponse
 from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, create_temp_token, decode_token, generate_mfa_secret, provisioning_uri, qr_data_uri, verify_totp
@@ -11,6 +12,7 @@ from app.core.audit import log_audit
 from app.core.rate_limit import limiter, RATE_LIMITS
 from app.core.auth_strong import PasswordPolicy, LoginAttemptTracker, SessionManager, PasswordReset
 from app.core.bot_protection import verify_bot_protection, optional_bot_check
+from app.core.api_keys import APIKeyManager, get_api_key, require_api_key_scope
 
 router = APIRouter()
 
@@ -428,3 +430,125 @@ async def change_password(request: Request, body: ChangePasswordRequest):
     from app.core.auth_strong import change_password as change_pwd
     
     raise HTTPException(status_code=501, detail="Requires authenticated user context")
+
+# ============================================================
+# API Key Management Endpoints
+# ============================================================
+
+class CreateAPIKeyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    scopes: List[str] = Field(default_factory=list)
+    expires_days: int = Field(default=365, ge=1, le=3650)
+    description: str = Field(default="", max_length=500)
+
+class CreateAPIKeyResponse(BaseModel):
+    key_id: str
+    raw_key: str
+    name: str
+    scopes: List[str]
+    expires_at: str
+    created_at: str
+    warning: str
+
+class APIKeyResponse(BaseModel):
+    key_id: str
+    name: str
+    scopes: List[str]
+    expires_at: str
+    created_at: str
+    last_used_at: Optional[str] = None
+    revoked: bool
+
+class RevokeAPIKeyRequest(BaseModel):
+    reason: str = Field(default="manual", max_length=200)
+
+class RotateAPIKeyRequest(BaseModel):
+    expires_days: int = Field(default=365, ge=1, le=3650)
+
+@router.post("/api-keys", response_model=CreateAPIKeyResponse, status_code=201)
+@limiter.limit("10/minute")
+async def create_api_key(request: Request, body: CreateAPIKeyRequest, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Create a new API key (requires admin:all scope)."""
+    tenant_id = get_current_tenant()
+    user_id = key_info.get("user_id")
+    
+    result = await APIKeyManager.create_key(
+        name=body.name,
+        tenant_id=tenant_id,
+        user_id=user_id,
+        scopes=body.scopes,
+        expires_days=body.expires_days,
+        description=body.description
+    )
+    return result
+
+@router.get("/api-keys", response_model=List[APIKeyResponse])
+async def list_api_keys(request: Request, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """List all API keys for the tenant (requires admin:all scope)."""
+    tenant_id = get_current_tenant()
+    user_id = key_info.get("user_id")
+    
+    keys = await APIKeyManager.list_keys(tenant_id, user_id)
+    return keys
+
+@router.get("/api-keys/{key_id}", response_model=APIKeyResponse)
+async def get_api_key_detail(key_id: str, request: Request, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Get API key details (requires admin:all scope)."""
+    tenant_id = get_current_tenant()
+    
+    db = get_db()
+    doc = db.collection("apiKeys").document(key_id).get()
+    if not doc.exists:
+        raise HTTPException(404, "API key not found")
+    
+    data = doc.to_dict()
+    if data.get("tenant_id") != tenant_id:
+        raise HTTPException(403, "Tenant mismatch")
+    
+    data["key_id"] = doc.id
+    data.pop("key_hash", None)
+    data.pop("salt", None)
+    return data
+
+@router.delete("/api-keys/{key_id}", response_model=MessageResponse)
+@limiter.limit("10/minute")
+async def revoke_api_key(key_id: str, request: Request, body: RevokeAPIKeyRequest, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Revoke an API key (requires admin:all scope)."""
+    tenant_id = get_current_tenant()
+    user_id = key_info.get("user_id")
+    
+    success = await APIKeyManager.revoke_key(key_id, tenant_id, user_id, body.reason)
+    if not success:
+        raise HTTPException(404, "API key not found")
+    
+    return {"message": "API key revoked successfully"}
+
+@router.post("/api-keys/{key_id}/rotate", response_model=CreateAPIKeyResponse)
+@limiter.limit("5/minute")
+async def rotate_api_key(key_id: str, request: Request, body: RotateAPIKeyRequest, key_info: dict = Depends(require_api_key_scope("admin:all"))):
+    """Rotate an API key - revoke old, create new with same scopes (requires admin:all scope)."""
+    tenant_id = get_current_tenant()
+    user_id = key_info.get("user_id")
+    
+    result = await APIKeyManager.rotate_key(key_id, tenant_id, user_id, body.expires_days)
+    return result
+
+# Public endpoint to validate an API key (for testing)
+class ValidateAPIKeyRequest(BaseModel):
+    api_key: str
+
+@router.post("/api-keys/validate")
+@limiter.limit("20/minute")
+async def validate_api_key(request: Request, body: ValidateAPIKeyRequest):
+    """Validate an API key (public endpoint for testing)."""
+    key_info = await APIKeyManager.validate_key(body.api_key)
+    if not key_info:
+        return {"valid": False, "reason": "Invalid, expired, or revoked"}
+    
+    return {
+        "valid": True,
+        "key_id": key_info.get("key_id"),
+        "name": key_info.get("name"),
+        "scopes": key_info.get("scopes"),
+        "expires_at": key_info.get("expires_at"),
+    }

@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.middleware.base import BaseHTTPMiddleware
+from datetime import datetime, timezone
+from typing import List
 
 from app.api.v1 import agent as agent_router
 from app.api.v1 import audit as audit_router
@@ -22,6 +24,7 @@ from app.core.config import get_settings
 from app.core.tenant import tenant_middleware
 from app.core.rate_limit import limiter, _rate_limit_exceeded_handler
 from app.core.bot_protection import BotDetectionMiddleware
+from app.core.api_keys import HMACVerifier, ReplayProtection
 from slowapi.errors import RateLimitExceeded
 
 
@@ -58,6 +61,85 @@ class RequestTimeoutMiddleware(BaseHTTPMiddleware):
             )
 
 
+class HMACVerificationMiddleware(BaseHTTPMiddleware):
+    """Verify HMAC signatures for webhook endpoints."""
+    
+    def __init__(self, app, required_paths: List[str] = None):
+        super().__init__(app)
+        self.required_paths = required_paths or ["/api/v1/webhooks/"]
+        self.max_drift = 300  # 5 minutes
+    
+    async def dispatch(self, request: Request, call_next):
+        # Check if path requires HMAC
+        path = request.url.path
+        hmac_required = any(path.startswith(p) for p in self.required_paths)
+        
+        if not hmac_required:
+            return await call_next(request)
+        
+        # Get headers
+        api_key = request.headers.get("X-API-Key")
+        signature = request.headers.get("X-Signature")
+        timestamp = request.headers.get("X-Timestamp")
+        nonce = request.headers.get("X-Nonce")
+        
+        if not api_key or not api_key.startswith("caoms_"):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Valid API key required (X-API-Key header)"}
+            )
+        
+        if not signature or not timestamp:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "HMAC signature required (X-Signature, X-Timestamp headers)"}
+            )
+        
+        # Verify timestamp
+        try:
+            ts = int(timestamp)
+            now = datetime.now(timezone.utc).timestamp()
+            if abs(now - ts) > self.max_drift:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Request timestamp expired or invalid"}
+                )
+        except (ValueError, TypeError):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid timestamp format"}
+            )
+        
+        # Get key info
+        from app.core.api_keys import APIKeyManager
+        key_info = await APIKeyManager.validate_key(api_key)
+        if not key_info:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or expired API key"}
+            )
+        
+        # Verify signature
+        body = await request.body()
+        if not HMACVerifier.verify_signature(api_key, body, timestamp, signature):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid HMAC signature"}
+            )
+        
+        # Replay protection
+        if not await ReplayProtection.check_and_store(key_info["key_id"], timestamp, nonce):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Replay attack detected"}
+            )
+        
+        # Store key info in request state for downstream use
+        request.state.api_key_info = key_info
+        
+        return await call_next(request)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(
@@ -82,12 +164,16 @@ def create_app() -> FastAPI:
     if settings.rate_limit_enabled:
         app.state.limiter = limiter
         app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    # 4. Bot detection (logs suspicious requests, doesn't block)
+    # 4. HMAC verification for webhook endpoints
+    hmac_paths = [p.strip() for p in settings.hmac_signature_required_paths.split(",") if p.strip()]
+    if hmac_paths:
+        app.add_middleware(HMACVerificationMiddleware, required_paths=hmac_paths)
+    # 5. Bot detection (logs suspicious requests, doesn't block)
     if settings.bot_protection_enabled:
         app.add_middleware(BotDetectionMiddleware)
-    # 5. Tenant resolution
+    # 6. Tenant resolution
     app.middleware('http')(tenant_middleware)
-    # 6. Audit logging (innermost)
+    # 7. Audit logging (innermost)
     app.middleware('http')(audit_middleware)
     
     try:
